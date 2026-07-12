@@ -1,6 +1,6 @@
 import type { Editor } from './editor';
 import type { Frame } from './frame';
-import type { Face } from './model';
+import type { Quad } from './meshbuilder';
 import { type Vec3, v3 } from './vec';
 import { type Cell, type VolFace, cellKey, planShiftChanges, planeAxes } from './volume';
 
@@ -23,19 +23,13 @@ export interface BoxSel {
 
 type Drag = { kind: 'rect'; sel: BoxSel } | null;
 
-const DUMMY_UVS: Face['uvs'] = [
-  { x: 0, y: 0 },
-  { x: 0, y: 0 },
-  { x: 0, y: 0 },
-  { x: 0, y: 0 },
-];
-
 /**
  * Build mode — the Jarlsberg flow. Click a face (click = 1×1) or drag across
  * its plane to select an axis-aligned rectangle (overhang allowed), then press
- * `=` to extrude the rect out one layer or `-` to carve one layer in. The
- * selection plane follows the surface. Right-click carves a single cell;
- * the "+ Voxel" toolbar button seeds a cell when there's nothing to click.
+ * `=` to extrude the faces present in the rect out one layer, or `-` to carve
+ * one layer of the rect's footprint in (the carve plane keeps marching even
+ * once nothing is left). The "+ Voxel" toolbar button seeds a cell when
+ * there's nothing to click.
  */
 export class BuildMode {
   readonly name = 'build';
@@ -108,11 +102,11 @@ export class BuildMode {
     sel.b1 = b;
   }
 
-  /** Overlay faces for the selection rect: real faces where exposed, flat grid quads in air. */
-  selectionFaces(): Face[] {
+  /** Overlay quads for the selection rect: real faces where exposed, flat grid quads in air. */
+  selectionFaces(): Quad[] {
     const sel = this.ed.boxSel;
     if (!sel) return [];
-    const out: Face[] = [];
+    const out: Quad[] = [];
     const [lo0, hi0] = [Math.min(sel.a0, sel.a1), Math.max(sel.a0, sel.a1)];
     const [lo1, hi1] = [Math.min(sel.b0, sel.b1), Math.max(sel.b0, sel.b1)];
     const dir = sel.axis * 2 + (sel.sign > 0 ? 0 : 1);
@@ -123,7 +117,7 @@ export class BuildMode {
         const key = `${this.cellAtLayer(sel, a, b, inLayer)}:${dir}`;
         const vf = this.ed.displayMap.get(key);
         if (vf) {
-          out.push({ id: 0, verts: vf.verts, uvs: DUMMY_UVS });
+          out.push({ verts: vf.verts });
         } else {
           // flat quad on the plane (air / overhang)
           const mk = (da: number, db: number): Vec3 => {
@@ -133,11 +127,29 @@ export class BuildMode {
             p[a2] = b + db;
             return v3(p[0], p[1], p[2]);
           };
-          out.push({ id: 0, verts: [mk(0, 0), mk(1, 0), mk(1, 1), mk(0, 1)], uvs: DUMMY_UVS });
+          out.push({ verts: [mk(0, 0), mk(1, 0), mk(1, 1), mk(0, 1)] });
         }
       }
     }
     return out;
+  }
+
+  /** Lattice corners of the faces present in the selection rect (for mode handoff). */
+  selectionLatticeKeys(): string[] {
+    const sel = this.ed.boxSel;
+    if (!sel) return [];
+    const keys = new Set<string>();
+    const [lo0, hi0] = [Math.min(sel.a0, sel.a1), Math.max(sel.a0, sel.a1)];
+    const [lo1, hi1] = [Math.min(sel.b0, sel.b1), Math.max(sel.b0, sel.b1)];
+    const dir = sel.axis * 2 + (sel.sign > 0 ? 0 : 1);
+    const inLayer = sel.plane + (sel.sign > 0 ? -1 : 0);
+    for (let b = lo1; b <= hi1; b++) {
+      for (let a = lo0; a <= hi0; a++) {
+        const vf = this.ed.surfaceMap.get(`${this.cellAtLayer(sel, a, b, inLayer)}:${dir}`);
+        if (vf) for (const lk of vf.lattice) keys.add(lk);
+      }
+    }
+    return [...keys];
   }
 
   // -- extrude / carve --------------------------------------------------------------
@@ -150,34 +162,45 @@ export class BuildMode {
     const [lo0, hi0] = [Math.min(sel.a0, sel.a1), Math.max(sel.a0, sel.a1)];
     const [lo1, hi1] = [Math.min(sel.b0, sel.b1), Math.max(sel.b0, sel.b1)];
     const out = dir > 0;
-    const layer = out
-      ? sel.plane + (sel.sign > 0 ? 0 : -1) // the cell just outside the plane
-      : sel.plane + (sel.sign > 0 ? -1 : 0); // the cell just inside the plane
+    const outLayer = sel.plane + (sel.sign > 0 ? 0 : -1); // cell just outside the plane
+    const inLayer = sel.plane + (sel.sign > 0 ? -1 : 0); // cell just inside the plane
     const changed: string[] = [];
     for (let b = lo1; b <= hi1; b++) {
       for (let a = lo0; a <= hi0; a++) {
-        const key = this.cellAtLayer(sel, a, b, layer);
-        if (out ? !ed.doc.cells.has(key) : ed.doc.cells.has(key)) changed.push(key);
+        if (out) {
+          // extrude only where a face is actually present at the plane — the
+          // rect's air stays air
+          const solid = ed.doc.cells.has(this.cellAtLayer(sel, a, b, inLayer));
+          const outKey = this.cellAtLayer(sel, a, b, outLayer);
+          if (solid && !ed.doc.cells.has(outKey)) changed.push(outKey);
+        } else {
+          // carve the whole footprint, present or not
+          const inKey = this.cellAtLayer(sel, a, b, inLayer);
+          if (ed.doc.cells.has(inKey)) changed.push(inKey);
+        }
       }
     }
-    if (!changed.length) return; // nothing ahead/behind — don't move the plane
-    // new surface corners inherit the offset of the corner one layer back along
-    // the extrusion axis (the ring they grew out of)
-    const sourceDelta: Cell = [0, 0, 0];
-    sourceDelta[sel.axis] = out ? -sel.sign : sel.sign;
-    const shifts = planShiftChanges(
-      ed.doc.cells,
-      ed.doc.shifts,
-      ed.surfaceLattice,
-      out ? changed : [],
-      out ? [] : changed,
-      sourceDelta,
-    );
-    ed.commit({
-      cellsAdded: out ? changed : undefined,
-      cellsRemoved: out ? undefined : changed,
-      shifts: shifts.length ? shifts : undefined,
-    });
+    if (out && !changed.length) return; // nothing to grow from — plane stays
+    if (changed.length) {
+      // new surface corners inherit the offset of the corner one layer back
+      // along the extrusion axis (the ring they grew out of)
+      const sourceDelta: Cell = [0, 0, 0];
+      sourceDelta[sel.axis] = out ? -sel.sign : sel.sign;
+      const shifts = planShiftChanges(
+        ed.doc.cells,
+        ed.doc.shifts,
+        ed.surfaceLattice,
+        out ? changed : [],
+        out ? [] : changed,
+        sourceDelta,
+      );
+      ed.commit({
+        cellsAdded: out ? changed : undefined,
+        cellsRemoved: out ? undefined : changed,
+        shifts: shifts.length ? shifts : undefined,
+      });
+    }
+    // the carve plane keeps marching even through empty space
     sel.plane += out ? sel.sign : -sel.sign;
     ed.refreshOverlays();
   }
@@ -230,29 +253,13 @@ export class BuildMode {
     this.drag = null;
   }
 
-  rmbClick(e: PointerEvent): void {
-    const ed = this.ed;
-    const pick = ed.pickVolFace(e);
-    if (!pick) return;
-    const key = cellKey(...pick.vf.cell);
-    const sourceDelta: Cell = [0, 0, 0];
-    const axis = pick.vf.dir >> 1;
-    sourceDelta[axis] = pick.vf.dir % 2 === 0 ? 1 : -1;
-    const shifts = planShiftChanges(
-      ed.doc.cells,
-      ed.doc.shifts,
-      ed.surfaceLattice,
-      [],
-      [key],
-      sourceDelta,
-    );
-    ed.commit({ cellsRemoved: [key], shifts: shifts.length ? shifts : undefined });
-    this.refreshGhost();
+  rmbClick(_e: PointerEvent): void {
+    // reserved for a future tool — LMB-select + `-` covers deletion
   }
 
   private refreshGhost(): void {
     const vf = this.hoverKey ? this.ed.displayMap.get(this.hoverKey) : null;
-    this.ed.setGhost(vf ? [{ id: 0, verts: vf.verts, uvs: DUMMY_UVS }] : null, false, true);
+    this.ed.setGhost(vf ? [{ verts: vf.verts }] : null);
   }
 
   key(e: KeyboardEvent): boolean {
@@ -292,7 +299,7 @@ export class BuildMode {
       const vf = this.ed.surfaceMap.get(this.hoverKey);
       if (vf) {
         const [x, y, z] = vf.cell;
-        return `cell (${x}, ${y}, ${z}) — click/drag a rect, then = / −`;
+        return `cell (${x}, ${y}, ${z}) — click or drag a rect, then = extrude / − carve`;
       }
     }
     return this.ed.doc.cells.size ? '' : 'empty scene — press “+ Voxel” to start';

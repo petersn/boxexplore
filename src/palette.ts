@@ -1,5 +1,12 @@
-import type { Stamp } from './frame';
 import type { Tileset } from './tileset';
+
+/** A rectangular tile selection from the tileset (for future face texturing). */
+export interface Stamp {
+  tx: number;
+  ty: number;
+  w: number;
+  h: number;
+}
 
 /**
  * The tileset picker. Click selects a tile; click-drag selects a rectangular

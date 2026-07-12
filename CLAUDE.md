@@ -20,9 +20,17 @@ Three.js, no UI framework. See README.md for controls and file roles.
   It is watertight by construction; `editor.surfaceStats().oddEdges === 0` asserts it.
 - There is **no working-plane concept**. Build mode is rect-select-then-extrude:
   click/drag on a face selects an axis-aligned rect (`editor.boxSel`, may overhang
-  into air); `=`/`-` fill or carve one layer via `BuildMode.extrudeStep`, and the
-  selection plane follows. Vertex drags move in the camera-facing plane (Shift =
-  along the corner's averaged surface normal), snapped per world axis.
+  into air); `=` extrudes only faces actually present at the plane, `-` carves the
+  whole footprint (and its plane keeps marching even through empty space), via
+  `BuildMode.extrudeStep`. RMB is intentionally unbound (reserved). Tab from build
+  to vertex hands the rect's corners over as the vertex selection.
+- Vertex mode: click selects; a second click on a selected corner drags; any other
+  drag box-selects (Shift adds); Ctrl/Cmd+click = shortest-path select (Dijkstra
+  over surface edges, `lastPicked` anchor). X/Y/Z set blender-style constraints
+  (`VertexMode.constraint`, Shift = plane); with an axis, `=`/`-` nudge along it
+  toward/away from the camera. Drags with no constraint move in the camera plane,
+  snapped per world axis. Camera fly-down is Q (E/Space up) — Z is reserved for
+  the axis constraint.
 - Cell ops must keep offset hygiene: route shift changes through
   `planShiftChanges` (volume.ts) — it clears offsets leaving the surface and
   copies offsets onto newly exposed corners from one layer back along the
@@ -30,13 +38,13 @@ Three.js, no UI framework. See README.md for controls and file roles.
   offsets never affect new geometry).
 - The document model (`src/model.ts`) uses plain-object vectors (`src/vec.ts`), not
   THREE vectors — everything in the doc must stay JSON-serializable.
-- All edits go through `EditOp` (`cellsAdded`/`cellsRemoved`/`shifts` + legacy face
-  snapshots) so undo works; vertex drags use `doc.writeShiftsLive` then
-  `editor.commitApplied` on release; build ops `commit` once per keypress.
-- `doc.faces` (free textured quads) is a legacy layer: still rendered and
-  serialized, no longer editable. Future texturing = per-cell-face tile
-  assignment on the derived surface, not new quads. Face corners are ordered
-  [bl, br, tr, tl]; `CORNERS` in volume.ts follows the same convention.
+- All edits go through `EditOp` (`cellsAdded`/`cellsRemoved`/`shifts`) so undo
+  works; vertex drags use `doc.writeShiftsLive` then `editor.commitApplied` on
+  release; build ops `commit` once per keypress.
+- Peter has explicitly waived backwards compatibility until further notice — the
+  free-quad layer is fully deleted (scene format v3 = `{cells, shifts}` only).
+  Future texturing = per-cell-face tile assignment on the derived surface, not
+  new quads. Quad corners are ordered [bl, br, tr, tl] (`CORNERS` in volume.ts).
 - Modes: 1 Build, 2 Vertex. Grid step is per-mode (`editor.gridStep` accessor;
   vertex defaults to 0.5) and only affects vertex snapping + the reference grid.
 - Camera: `viewport.mode` is 'orbit' (target/dist pivot) or 'fly' (free position +
@@ -46,14 +54,15 @@ Three.js, no UI framework. See README.md for controls and file roles.
   tinted orange) and all previews/overlays must use them; face keys are stable
   across views so picking/tools work in both.
 - Vertex handles are exactly visibility-filtered: front-facing adjacent face +
-  voxel-DDA line of sight (`segmentBlocked`, stops just short of the endpoint).
-  Sculpt brushes: H smooth, U/J inflate/deflate, Y noise, O reset.
+  voxel-DDA line of sight (`segmentBlocked`, stops just short of the endpoint;
+  two probe distances along the corner normal so concave junctions aren't hidden
+  by grazing rays). Sculpt brushes: H smooth, U/J inflate/deflate, N noise, O reset.
 
 ## Verification
 
 The end-to-end playwright suite is `scripts/verify.mjs` (seed/rect-extrude/carve/
-overhang/offset extrapolation/clamp/visibility/brushes/views/cameras/undo/
-save-load). Run it with the dev server up: `node scripts/verify.mjs` (from the
-repo root so `playwright` resolves). It drives the real UI and asserts via
-`window.editor`; screenshots land in `/tmp/boxexplore-shots`. Always verify
-interactively, not just tsc.
+overhang/offset extrapolation/clamp/visibility/click-select/constraints/path
+select/handoff/brushes/views/cameras/undo/save-load). Run it with the dev server
+up: `node scripts/verify.mjs` (from the repo root so `playwright` resolves). It
+drives the real UI and asserts via `window.editor`; screenshots land in
+`/tmp/boxexplore-shots`. Always verify interactively, not just tsc.

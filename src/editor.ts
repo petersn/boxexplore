@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { type BoxSel, BuildMode } from './build';
-import { type Stamp, axisFrame, frameLocal } from './frame';
+import { axisFrame, frameLocal } from './frame';
 import { downloadText, loadScene, serializeScene } from './io';
-import { buildGeometry, buildOutlineGeometry, SceneMesh, VolMesh } from './meshbuilder';
-import { Doc, type EditOp, type Face, History, opIsEmpty } from './model';
-import { Palette } from './palette';
+import { type Quad, buildOutlineGeometry, buildQuadGeometry, VolMesh } from './meshbuilder';
+import { Doc, type EditOp, History, opIsEmpty } from './model';
+import { Palette, type Stamp } from './palette';
 import { Tileset } from './tileset';
 import { type Vec3, add, dot, mul, norm, sub } from './vec';
 import { VertexMode } from './vertex';
@@ -31,10 +31,10 @@ interface Mode {
 }
 
 const MODE_HINTS: Record<ModeName, string> = {
-  build: `<b>Click a face</b> or <b>drag a rect</b> on its plane (overhang ok) to select, then <b>=</b> extrude out · <b>−</b> carve in<br>
-<b>RMB</b> carve one cell · <b>Esc</b> clear · <b>+ Voxel</b> (toolbar) seeds a cell when the scene is empty`,
-  vertex: `<b>Click/drag</b> move corners in the view plane (<b>Shift</b> along the corner's normal, <b>Alt</b> no snap) · offsets clamp to ±½<br>
-<b>drag empty</b> box select (visible corners only) · brushes: <b>H</b> smooth · <b>U/J</b> inflate/deflate · <b>Y</b> noise · <b>O</b> reset`,
+  build: `<b>Click a face</b> or <b>drag a rect</b> on its plane (overhang ok) to select, then <b>=</b> extrude present faces · <b>−</b> carve the footprint<br>
+<b>Esc</b> clear · <b>+ Voxel</b> (toolbar) seeds a cell when the scene is empty`,
+  vertex: `<b>Click</b> select · <b>click again</b> drag (<b>Alt</b> no snap) · <b>drag</b> box select (<b>Shift</b> add) · <b>Ctrl/Cmd+click</b> shortest-path select<br>
+<b>X/Y/Z</b> axis constraint (<b>Shift</b> = plane) · <b>=/−</b> nudge along axis · brushes: <b>H</b> smooth · <b>U/J</b> inflate/deflate · <b>N</b> noise · <b>O</b> reset`,
 };
 
 export class Editor {
@@ -43,7 +43,6 @@ export class Editor {
   readonly tileset = new Tileset();
   readonly viewport: Viewport;
   readonly palette: Palette;
-  readonly sceneMesh: SceneMesh;
   readonly volMesh: VolMesh;
 
   /** Derived volume boundary (always sculpted), rebuilt when cells/shifts change. */
@@ -80,6 +79,7 @@ export class Editor {
   private selOutline: THREE.LineSegments;
   private volOutline: THREE.LineSegments;
   private vertPoints: THREE.Points;
+  private constraintLines: THREE.LineSegments;
   private lastGridKey = '';
   private lastVolVersion = -1;
   private lastCamKey = '';
@@ -101,15 +101,6 @@ export class Editor {
   constructor() {
     const canvas = document.getElementById('viewport') as HTMLCanvasElement;
     this.viewport = new Viewport(canvas);
-
-    // free detail quads (legacy scenes still render; texturing returns later)
-    const mainMat = new THREE.MeshBasicMaterial({
-      map: this.tileset.texture,
-      side: THREE.DoubleSide,
-      alphaTest: 0.5,
-    });
-    this.sceneMesh = new SceneMesh(mainMat);
-    this.viewport.scene.add(this.sceneMesh.mesh);
 
     // derived volume surface: untextured, flat-shaded by normal + AO, pushed
     // back a hair so overlays win the depth fight
@@ -183,6 +174,16 @@ export class Editor {
     this.vertPoints.renderOrder = 8;
     this.viewport.scene.add(this.vertPoints);
 
+    // blender-style axis/plane constraint widget (vertex mode)
+    this.constraintLines = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 }),
+    );
+    this.constraintLines.visible = false;
+    this.constraintLines.frustumCulled = false;
+    this.constraintLines.renderOrder = 9;
+    this.viewport.scene.add(this.constraintLines);
+
     // palette (tileset preview — texturing the volume comes later)
     this.palette = new Palette(document.getElementById('palette') as HTMLCanvasElement, this.tileset);
     this.palette.onSelect = (s) => {
@@ -197,7 +198,6 @@ export class Editor {
 
     this.doc.subscribe(() => {
       this.rebuildSurface();
-      this.sceneMesh.rebuild([...this.doc.faces.values()]);
       this.pruneSelection();
       this.refreshOverlays();
       this.scheduleAutosave();
@@ -214,7 +214,6 @@ export class Editor {
     this.bindDragDrop();
 
     this.viewport.onTick = () => this.tick();
-    this.sceneMesh.rebuild([]);
     this.rebuildSurface();
     this.setMode('build');
     this.restoreAutosave();
@@ -295,43 +294,36 @@ export class Editor {
 
   private pruneSelection(): void {
     for (const key of this.selectedVerts) {
-      if (key.startsWith('L:')) {
-        if (!this.surfaceLattice.has(key.slice(2))) this.selectedVerts.delete(key);
-      } else {
-        const id = Number(key.split(':')[0]);
-        if (!this.doc.faces.has(id)) this.selectedVerts.delete(key);
+      if (!key.startsWith('L:') || !this.surfaceLattice.has(key.slice(2))) {
+        this.selectedVerts.delete(key);
       }
     }
   }
 
   // -- overlays --------------------------------------------------------------------
 
-  /** `flat` drops the texture map — used for volume ghosts (plain tinted quads). */
-  setGhost(faces: Face[] | null, erase = false, flat = true): void {
-    if (!faces || faces.length === 0) {
+  setGhost(quads: Quad[] | null, erase = false): void {
+    if (!quads || quads.length === 0) {
       this.ghostMesh.visible = false;
       return;
     }
-    const wantMap = flat ? null : this.tileset.texture;
-    if (this.ghostMat.map !== wantMap) {
-      this.ghostMat.map = wantMap;
-      this.ghostMat.needsUpdate = true;
-    }
-    buildGeometry(faces, this.ghostMesh.geometry as THREE.BufferGeometry);
-    this.ghostMat.color.set(erase ? 0xff5566 : flat ? 0x9fd0ff : 0xffffff);
+    buildQuadGeometry(quads, this.ghostMesh.geometry as THREE.BufferGeometry);
+    this.ghostMat.color.set(erase ? 0xff5566 : 0x9fd0ff);
     this.ghostMat.opacity = erase ? 0.45 : 0.35;
     this.ghostMesh.visible = true;
   }
 
   refreshOverlays(): void {
-    const faces: Face[] =
+    const quads: Quad[] =
       this.mode.name === 'build' ? (this.modes.build as BuildMode).selectionFaces() : [];
-    if (faces.length) {
-      buildGeometry(faces, this.selMesh.geometry as THREE.BufferGeometry);
-      buildOutlineGeometry(faces, this.selOutline.geometry as THREE.BufferGeometry);
+    if (quads.length) {
+      buildQuadGeometry(quads, this.selMesh.geometry as THREE.BufferGeometry);
+      buildOutlineGeometry(quads, this.selOutline.geometry as THREE.BufferGeometry);
     }
-    this.selMesh.visible = faces.length > 0;
-    this.selOutline.visible = faces.length > 0;
+    this.selMesh.visible = quads.length > 0;
+    this.selOutline.visible = quads.length > 0;
+
+    this.refreshConstraintWidget();
 
     if (this.mode.name === 'vertex') {
       const handles = (this.modes.vertex as VertexMode).visibleHandles();
@@ -361,6 +353,45 @@ export class Editor {
     }
   }
 
+  /** Axis lines through the vertex selection while an x/y/z constraint is active. */
+  private refreshConstraintWidget(): void {
+    const vm = this.modes.vertex as VertexMode;
+    const c = this.mode.name === 'vertex' ? vm.constraint : null;
+    const centroid = c ? vm.selectionCentroid() : null;
+    if (!c || !centroid) {
+      this.constraintLines.visible = false;
+      return;
+    }
+    const AXIS_COLORS: Array<[number, number, number]> = [
+      [0.95, 0.35, 0.35],
+      [0.45, 0.85, 0.4],
+      [0.35, 0.55, 0.95],
+    ];
+    const axes = c.plane ? [0, 1, 2].filter((a) => a !== c.axis) : [c.axis];
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const EXT = 64;
+    for (const a of axes) {
+      const dir = [0, 0, 0];
+      dir[a] = 1;
+      positions.push(
+        centroid.x - dir[0] * EXT,
+        centroid.y - dir[1] * EXT,
+        centroid.z - dir[2] * EXT,
+        centroid.x + dir[0] * EXT,
+        centroid.y + dir[1] * EXT,
+        centroid.z + dir[2] * EXT,
+      );
+      const [r, g, b] = AXIS_COLORS[a];
+      colors.push(r, g, b, r, g, b);
+    }
+    const geo = this.constraintLines.geometry as THREE.BufferGeometry;
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.computeBoundingSphere();
+    this.constraintLines.visible = true;
+  }
+
   showSelBox(a: { x: number; y: number }, b: { x: number; y: number }): void {
     const el = this.el.selbox;
     el.hidden = false;
@@ -388,9 +419,18 @@ export class Editor {
   // -- modes ---------------------------------------------------------------------
 
   setMode(name: ModeName): void {
+    // hand a build-mode rect selection over to vertex mode as its corners
+    let handoff: string[] | null = null;
+    if (this.mode.name === 'build' && name === 'vertex' && this.boxSel) {
+      handoff = (this.modes.build as BuildMode).selectionLatticeKeys();
+    }
     this.mode.exit();
     this.mode = this.modes[name];
     this.mode.enter();
+    if (handoff?.length) {
+      this.selectedVerts.clear();
+      for (const lk of handoff) this.selectedVerts.add(`L:${lk}`);
+    }
     document.querySelectorAll<HTMLButtonElement>('#mode-buttons button').forEach((b) => {
       b.classList.toggle('active', b.dataset.mode === name);
     });
@@ -437,7 +477,7 @@ export class Editor {
   }
 
   private newScene(): void {
-    if ((this.doc.faces.size || this.doc.cells.size) && !confirm('Clear the whole scene?')) return;
+    if (this.doc.cells.size && !confirm('Clear the whole scene?')) return;
     this.doc.clear();
     this.history.clear();
     this.selectedVerts.clear();
@@ -688,7 +728,6 @@ export class Editor {
       `grid ${this.gridStep}`,
       `${this.doc.cells.size} cells`,
     ];
-    if (this.doc.faces.size) parts.push(`${this.doc.faces.size} legacy faces`);
     const info = this.mode.statusInfo();
     if (info) parts.push(info);
     this.el.statusbar.textContent = parts.join('  ·  ');

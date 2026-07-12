@@ -83,7 +83,7 @@
             <tr><td>Right-drag</td><td>Orbit — or mouselook in fly mode</td></tr>
             <tr><td>Middle-drag</td><td>Pan</td></tr>
             <tr><td>Wheel</td><td>Zoom — or dolly in fly mode</td></tr>
-            <tr><td>W A S D</td><td>Move (Space up, Z down, Shift fast)</td></tr>
+            <tr><td>W A S D</td><td>Move (E/Space up, Q down, Shift fast)</td></tr>
             <tr><td>C</td><td>Center camera on selection / volume</td></tr>
             <tr><td>V</td><td>Toggle voxel debug view (offsets ignored, displaced corners orange)</td></tr>
           </table>
@@ -91,19 +91,21 @@
             <tr><th colspan="2">Build mode</th></tr>
             <tr><td>Click a face</td><td>Select a 1×1 rect on its plane</td></tr>
             <tr><td>Drag from a face</td><td>Select a rect on its plane — overhang into air is fine</td></tr>
-            <tr><td>=</td><td>Extrude: fill the rect one layer outward</td></tr>
-            <tr><td>− / Delete</td><td>Carve: remove one layer of the rect inward</td></tr>
+            <tr><td>=</td><td>Extrude the faces present in the rect one layer outward</td></tr>
+            <tr><td>− / Delete</td><td>Carve one layer of the rect's footprint (keeps marching through air)</td></tr>
             <tr><td>Esc</td><td>Clear selection</td></tr>
-            <tr><td>Right-click</td><td>Carve one cell</td></tr>
+            <tr><td>Tab</td><td>Switch to vertex mode — a rect selection carries its corners over</td></tr>
             <tr><td>+ Voxel (toolbar)</td><td>Seed a cell near the origin when the scene is empty</td></tr>
             <tr><th colspan="2">Vertex mode</th></tr>
-            <tr><td>Click / drag</td><td>Move corners in the view plane (only visible corners show)</td></tr>
-            <tr><td>Shift+drag</td><td>Move along the corner's surface normal</td></tr>
-            <tr><td>Alt while dragging</td><td>Disable snap</td></tr>
-            <tr><td>Drag empty space</td><td>Box select visible corners</td></tr>
+            <tr><td>Click</td><td>Select a corner (only visible corners show)</td></tr>
+            <tr><td>Click a selected corner</td><td>Drag to move it (Alt = no snap)</td></tr>
+            <tr><td>Drag</td><td>Box select (Shift = add to selection)</td></tr>
+            <tr><td>Ctrl/Cmd+click</td><td>Select the shortest edge path from the last-picked corner</td></tr>
+            <tr><td>X / Y / Z</td><td>Constrain movement to an axis (Shift = plane ⊥ axis; same key clears)</td></tr>
+            <tr><td>= / −</td><td>Nudge selection along the constrained axis, toward / away from camera</td></tr>
             <tr><td>H</td><td>Smooth brush — relax selected corners toward neighbors</td></tr>
             <tr><td>U / J</td><td>Inflate / deflate selected corners along their normal</td></tr>
-            <tr><td>Y</td><td>Noise brush — organic jitter</td></tr>
+            <tr><td>N</td><td>Noise brush — organic jitter</td></tr>
             <tr><td>O</td><td>Reset selected corner offsets</td></tr>
             <tr><td colspan="2" class="hint">All corner offsets are hard-clamped to ±½ cell on every axis.</td></tr>
           </table>

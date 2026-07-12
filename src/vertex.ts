@@ -1,82 +1,83 @@
 import type { Editor } from './editor';
-import { type Face, type ShiftChange, copyFace } from './model';
-import { type Vec3, add, cross, dot, len, mul, norm, snap, sub, v3, vkey } from './vec';
+import { type ShiftChange } from './model';
+import { type Vec3, add, cross, dot, len, mul, norm, snap, sub, v3 } from './vec';
 import { type VolFace, DIRS, parseCell, segmentBlocked } from './volume';
 
 export interface VertexHandle {
   pos: Vec3;
-  /** [faceId, cornerIndex] pairs sharing this position (welded free corners). */
-  refs: Array<[number, number]>;
-  /** Set for volume-surface corners: the lattice key this handle displaces. */
-  lattice?: string;
+  /** The lattice key this handle displaces. */
+  lattice: string;
   selected: boolean;
 }
 
+/** Blender-style movement constraint: an axis, or the plane normal to it. */
+export interface Constraint {
+  axis: 0 | 1 | 2;
+  plane: boolean;
+}
+
 type Drag =
-  | { kind: 'box'; start: { x: number; y: number }; additive: boolean }
+  | {
+      kind: 'box';
+      start: { x: number; y: number };
+      additive: boolean;
+      /** Handle under the initial press — a no-move release (de)selects it. */
+      clickHandle: VertexHandle | null;
+      moved: boolean;
+    }
   | {
       kind: 'move';
-      before: Map<number, Face>;
       /** Lattice key → displacement before the drag (null = none). */
       latticeBefore: Map<string, Vec3 | null>;
       grab: Vec3;
-      /** Averaged surface normal at the grabbed handle (Shift constrains to it). */
-      normal: Vec3;
       moved: boolean;
-      /** Shift+click on an already-selected vertex deselects it on release (unless dragged). */
-      pendingDeselect: string[] | null;
     };
+
+const AXIS_UNITS: readonly Vec3[] = [v3(1, 0, 0), v3(0, 1, 0), v3(0, 0, 1)];
 
 const faceNormal = (verts: readonly Vec3[]): Vec3 =>
   norm(cross(sub(verts[2], verts[0]), sub(verts[3], verts[1])));
 
 /**
- * Vertex mode: drag corners to sculpt slopes and terrain. Plain drags move in
- * the camera-facing plane (snapped to the grid per world axis); Shift drags
- * along the corner's surface normal; Alt disables snapping. Volume corners
- * write lattice displacements — hard-clamped to ±½ cell — deforming every
- * touching face at once so the volume stays sealed. Only corners the camera
- * can actually see are shown and pickable.
+ * Vertex mode: sculpt the surface by moving lattice corners (offsets are
+ * hard-clamped to ±½ cell, and the surface stays sealed). Click selects; click
+ * a *selected* corner again to drag it — drags from unselected corners or empty
+ * space box-select (Shift = additive). X/Y/Z constrain movement to an axis
+ * (Shift+X/Y/Z = the plane normal to it); with an axis set, `=`/`-` nudge the
+ * selection along it toward/away from the camera. Ctrl/Cmd+click selects the
+ * shortest edge path from the previously picked corner. Only corners the
+ * camera can actually see are shown and pickable.
  */
 export class VertexMode {
   readonly name = 'vertex';
+  constraint: Constraint | null = null;
   private drag: Drag | null = null;
+  private lastPicked: string | null = null;
 
   constructor(private ed: Editor) {}
 
   enter(): void {
+    this.constraint = null;
     this.ed.refreshOverlays();
   }
 
   exit(): void {
+    this.constraint = null;
     this.drag = null;
+    this.lastPicked = null;
     this.ed.hideSelBox();
     this.ed.refreshOverlays();
   }
 
-  /** Welded free-face corners plus one handle per volume-surface lattice point. */
+  /** One handle per volume-surface lattice corner. */
   handles(): VertexHandle[] {
     const ed = this.ed;
-    const map = new Map<string, VertexHandle>();
-    for (const f of ed.doc.faces.values()) {
-      for (let ci = 0; ci < 4; ci++) {
-        const key = vkey(f.verts[ci]);
-        let h = map.get(key);
-        if (!h) {
-          h = { pos: f.verts[ci], refs: [], selected: false };
-          map.set(key, h);
-        }
-        h.refs.push([f.id, ci]);
-        if (ed.selectedVerts.has(`${f.id}:${ci}`)) h.selected = true;
-      }
-    }
-    const out = [...map.values()];
+    const out: VertexHandle[] = [];
     for (const lk of ed.surfaceLattice) {
       const [x, y, z] = parseCell(lk);
       const s = ed.doc.shifts.get(lk);
       out.push({
         pos: v3(x + (s?.x ?? 0), y + (s?.y ?? 0), z + (s?.z ?? 0)),
-        refs: [],
         lattice: lk,
         selected: ed.selectedVerts.has(`L:${lk}`),
       });
@@ -97,21 +98,12 @@ export class VertexMode {
     return map;
   }
 
-  /** Averaged surface normal at a handle (world up as a last resort). */
-  private handleNormal(h: VertexHandle, latticeFaces?: Map<string, VolFace[]>): Vec3 {
-    if (h.lattice) {
-      const faces = (latticeFaces ?? this.latticeFaces()).get(h.lattice);
-      if (faces?.length) {
-        let n = v3();
-        for (const f of faces) n = add(n, faceNormal(f.verts));
-        if (len(n) > 1e-9) return norm(n);
-      }
-    } else if (h.refs.length) {
+  /** Averaged surface normal at a corner (world up as a last resort). */
+  private latticeNormal(lk: string, latticeFaces?: Map<string, VolFace[]>): Vec3 {
+    const faces = (latticeFaces ?? this.latticeFaces()).get(lk);
+    if (faces?.length) {
       let n = v3();
-      for (const [id] of h.refs) {
-        const f = this.ed.doc.faces.get(id);
-        if (f) n = add(n, faceNormal(f.verts));
-      }
+      for (const f of faces) n = add(n, faceNormal(f.verts));
       if (len(n) > 1e-9) return norm(n);
     }
     return v3(0, 1, 0);
@@ -119,31 +111,29 @@ export class VertexMode {
 
   /**
    * Handles the camera can actually see: at least one adjacent face turned
-   * toward the camera, and an unobstructed voxel line of sight to the corner
-   * (nudged just off the surface along its normal).
+   * toward the camera, plus an unobstructed voxel line of sight to a probe
+   * just off the surface. Two probe distances along the corner normal keep
+   * concave corners (where the sight line grazes a surface) from being
+   * hidden over-eagerly.
    */
   visibleHandles(): VertexHandle[] {
     const ed = this.ed;
     const eye = ed.viewport.cameraPos();
     const lf = this.latticeFaces();
     return this.handles().filter((h) => {
-      if (h.lattice) {
-        const faces = lf.get(h.lattice);
-        if (!faces?.length) return false;
-        const facing = faces.some((f) => {
-          const n = DIRS[f.dir];
-          return n[0] * (eye.x - h.pos.x) + n[1] * (eye.y - h.pos.y) + n[2] * (eye.z - h.pos.z) > 1e-6;
-        });
-        if (!facing) return false;
-        const probe = add(h.pos, mul(this.handleNormal(h, lf), 0.04));
-        return !segmentBlocked(ed.doc.cells, eye, probe);
-      }
-      return !segmentBlocked(ed.doc.cells, eye, h.pos);
+      const faces = lf.get(h.lattice);
+      if (!faces?.length) return false;
+      const facing = faces.some((f) => {
+        const n = DIRS[f.dir];
+        return n[0] * (eye.x - h.pos.x) + n[1] * (eye.y - h.pos.y) + n[2] * (eye.z - h.pos.z) > 1e-6;
+      });
+      if (!facing) return false;
+      const n = this.latticeNormal(h.lattice, lf);
+      return (
+        !segmentBlocked(ed.doc.cells, eye, add(h.pos, mul(n, 0.08))) ||
+        !segmentBlocked(ed.doc.cells, eye, add(h.pos, mul(n, 0.4)))
+      );
     });
-  }
-
-  private handleKeys(h: VertexHandle): string[] {
-    return h.lattice ? [`L:${h.lattice}`] : h.refs.map(([id, ci]) => `${id}:${ci}`);
   }
 
   private pickHandle(e: PointerEvent): VertexHandle | null {
@@ -163,50 +153,43 @@ export class VertexMode {
     return best;
   }
 
+  /** Centroid of the selected corners (for the constraint widget and nudges). */
+  selectionCentroid(): Vec3 | null {
+    const keys = this.selectedLattice();
+    if (!keys.length) return null;
+    let c = v3();
+    for (const lk of keys) c = add(c, this.displaced(lk));
+    return mul(c, 1 / keys.length);
+  }
+
   // -- events -----------------------------------------------------------------
 
   pointerDown(e: PointerEvent): void {
     const ed = this.ed;
     const h = this.pickHandle(e);
-    if (!h) {
-      this.drag = { kind: 'box', start: ed.viewport.eventPoint(e), additive: e.shiftKey };
+    if (h && (e.ctrlKey || e.metaKey)) {
+      this.pathSelect(h);
       return;
     }
-    const keys = this.handleKeys(h);
-    let pendingDeselect: string[] | null = null;
-    if (e.shiftKey) {
-      if (keys.every((k) => ed.selectedVerts.has(k))) {
-        pendingDeselect = keys;
-      } else {
-        for (const k of keys) ed.selectedVerts.add(k);
-        ed.refreshOverlays();
-      }
-    } else if (!keys.some((k) => ed.selectedVerts.has(k))) {
-      ed.selectedVerts.clear();
-      for (const k of keys) ed.selectedVerts.add(k);
-      ed.refreshOverlays();
-    }
-    const before = new Map<number, Face>();
-    const latticeBefore = new Map<string, Vec3 | null>();
-    for (const key of ed.selectedVerts) {
-      if (key.startsWith('L:')) {
+    if (h && h.selected && !e.shiftKey) {
+      // second click on an already-selected corner starts the move
+      const latticeBefore = new Map<string, Vec3 | null>();
+      for (const key of ed.selectedVerts) {
+        if (!key.startsWith('L:')) continue;
         const lk = key.slice(2);
         const s = ed.doc.shifts.get(lk);
         latticeBefore.set(lk, s ? { ...s } : null);
-      } else {
-        const id = Number(key.split(':')[0]);
-        const f = ed.doc.faces.get(id);
-        if (f && !before.has(id)) before.set(id, copyFace(f));
       }
+      this.drag = { kind: 'move', latticeBefore, grab: { ...h.pos }, moved: false };
+      return;
     }
+    // everything else biases toward box select (click = select on release)
     this.drag = {
-      kind: 'move',
-      before,
-      latticeBefore,
-      grab: { ...h.pos },
-      normal: this.handleNormal(h),
+      kind: 'box',
+      start: ed.viewport.eventPoint(e),
+      additive: e.shiftKey,
+      clickHandle: h,
       moved: false,
-      pendingDeselect,
     };
   }
 
@@ -215,46 +198,46 @@ export class VertexMode {
     if (!d) return;
     const ed = this.ed;
     if (d.kind === 'box') {
-      ed.showSelBox(d.start, ed.viewport.eventPoint(e));
+      const p = ed.viewport.eventPoint(e);
+      if (Math.abs(p.x - d.start.x) + Math.abs(p.y - d.start.y) > 4) d.moved = true;
+      if (d.moved) ed.showSelBox(d.start, p);
       return;
     }
-    let delta: Vec3 | null = null;
-    if (e.shiftKey) {
-      // constrain to the corner's surface normal
-      let t = ed.viewport.pickLineThrough(e, d.grab, d.normal);
-      if (!e.altKey) t = snap(t, ed.gridStep);
-      delta = mul(d.normal, t);
-    } else {
-      // free move in the camera-facing plane, snapped per world axis
-      const p = ed.viewport.pickPlaneThrough(e, d.grab, ed.viewport.forward());
-      if (p) {
-        const target = e.altKey
-          ? p
-          : v3(snap(p.x, ed.gridStep), snap(p.y, ed.gridStep), snap(p.z, ed.gridStep));
-        delta = sub(target, d.grab);
-      }
-    }
+    const delta = this.dragDelta(e, d.grab);
     if (!delta) return;
-    const moved: Face[] = [];
-    for (const [id, before] of d.before) {
-      const c = copyFace(before);
-      for (let ci = 0; ci < 4; ci++) {
-        if (ed.selectedVerts.has(`${id}:${ci}`)) {
-          c.verts[ci] = add(before.verts[ci], delta);
-        }
-      }
-      moved.push(c);
+    const entries: Array<[string, Vec3 | null]> = [];
+    for (const [lk, before] of d.latticeBefore) {
+      entries.push([lk, add(before ?? v3(), delta)]);
     }
-    if (moved.length) ed.doc.writeLive(moved);
-    if (d.latticeBefore.size) {
-      const entries: Array<[string, Vec3 | null]> = [];
-      for (const [lk, before] of d.latticeBefore) {
-        entries.push([lk, add(before ?? v3(), delta)]);
-      }
-      ed.doc.writeShiftsLive(entries); // offsets hard-clamp to ±0.5 in the doc
-    }
+    ed.doc.writeShiftsLive(entries); // offsets hard-clamp to ±0.5 in the doc
     d.moved = d.moved || Math.hypot(delta.x, delta.y, delta.z) > 1e-9;
     ed.refreshOverlays();
+  }
+
+  /** Pointer → world delta under the active constraint. */
+  private dragDelta(e: PointerEvent, grab: Vec3): Vec3 | null {
+    const ed = this.ed;
+    const c = this.constraint;
+    if (c && !c.plane) {
+      const u = AXIS_UNITS[c.axis];
+      let t = ed.viewport.pickLineThrough(e, grab, u);
+      if (!e.altKey) t = snap(t, ed.gridStep);
+      return mul(u, t);
+    }
+    const planeN = c ? AXIS_UNITS[c.axis] : ed.viewport.forward();
+    const p = ed.viewport.pickPlaneThrough(e, grab, planeN);
+    if (!p) return null;
+    const target = e.altKey
+      ? p
+      : v3(snap(p.x, ed.gridStep), snap(p.y, ed.gridStep), snap(p.z, ed.gridStep));
+    const delta = sub(target, grab);
+    if (c?.plane) {
+      // keep exactly in the constraint plane despite per-axis snapping
+      if (c.axis === 0) delta.x = 0;
+      else if (c.axis === 1) delta.y = 0;
+      else delta.z = 0;
+    }
+    return delta;
   }
 
   pointerUp(e: PointerEvent): void {
@@ -263,28 +246,29 @@ export class VertexMode {
     const ed = this.ed;
     if (!d) return;
     if (d.kind === 'box') {
-      this.applyBoxSelect(d.start, ed.viewport.eventPoint(e), d.additive);
-      ed.hideSelBox();
-      return;
-    }
-    if (!d.moved) {
-      if (d.pendingDeselect) {
-        for (const k of d.pendingDeselect) ed.selectedVerts.delete(k);
+      if (!d.moved && d.clickHandle) {
+        const key = `L:${d.clickHandle.lattice}`;
+        if (d.additive && d.clickHandle.selected) {
+          ed.selectedVerts.delete(key);
+        } else {
+          if (!d.additive) ed.selectedVerts.clear();
+          ed.selectedVerts.add(key);
+          this.lastPicked = d.clickHandle.lattice;
+        }
         ed.refreshOverlays();
+      } else {
+        this.applyBoxSelect(d.start, ed.viewport.eventPoint(e), d.additive);
+        ed.hideSelBox();
       }
       return;
     }
-    const before = [...d.before.values()];
-    const after = before
-      .map((f) => ed.doc.faces.get(f.id))
-      .filter((f): f is Face => !!f)
-      .map(copyFace);
+    if (!d.moved) return;
     const shifts: ShiftChange[] = [];
     for (const [lk, was] of d.latticeBefore) {
       const now = ed.doc.shifts.get(lk);
       shifts.push({ key: lk, before: was, after: now ? { ...now } : null });
     }
-    ed.commitApplied({ before, after, shifts });
+    ed.commitApplied({ shifts });
     ed.refreshOverlays();
   }
 
@@ -298,7 +282,7 @@ export class VertexMode {
     for (const h of this.visibleHandles()) {
       const s = ed.viewport.screenPoint(h.pos);
       if (s && s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) {
-        for (const k of this.handleKeys(h)) ed.selectedVerts.add(k);
+        ed.selectedVerts.add(`L:${h.lattice}`);
       }
     }
     ed.refreshOverlays();
@@ -309,46 +293,89 @@ export class VertexMode {
     this.ed.refreshOverlays();
   }
 
-  /** Merge all selected free corners at their centroid (Crocotile's combine). */
-  private mergeSelected(): void {
+  /** Ctrl/Cmd+click: add the shortest edge path from the last-picked corner. */
+  private pathSelect(target: VertexHandle): void {
     const ed = this.ed;
-    if (!ed.selectedVerts.size) return;
-    const byFace = new Map<number, Face>();
-    let c: Vec3 = { x: 0, y: 0, z: 0 };
-    let n = 0;
-    const seen = new Set<string>();
-    for (const key of ed.selectedVerts) {
-      if (key.startsWith('L:')) continue; // lattice corners keep their topology
-      const [idStr, ciStr] = key.split(':');
-      const f = ed.doc.faces.get(Number(idStr));
-      if (!f) continue;
-      byFace.set(f.id, f);
-      const v = f.verts[Number(ciStr)];
-      const pk = vkey(v);
-      if (!seen.has(pk)) {
-        seen.add(pk);
-        c = add(c, v);
-        n++;
-      }
+    const from = this.lastPicked;
+    ed.selectedVerts.add(`L:${target.lattice}`);
+    if (from && from !== target.lattice && ed.surfaceLattice.has(from)) {
+      const path = this.shortestPath(from, target.lattice);
+      for (const lk of path) ed.selectedVerts.add(`L:${lk}`);
     }
-    if (!n) return;
-    c = mul(c, 1 / n);
-    const faces = [...byFace.values()];
-    const before = faces.map(copyFace);
-    const after = faces.map((f) => {
-      const copy = copyFace(f);
-      for (let ci = 0; ci < 4; ci++) {
-        if (ed.selectedVerts.has(`${f.id}:${ci}`)) copy.verts[ci] = { ...c };
-      }
-      return copy;
-    });
-    ed.commit({ before, after });
+    this.lastPicked = target.lattice;
     ed.refreshOverlays();
   }
 
+  /** Dijkstra over surface quad edges, weighted by displaced edge length. */
+  private shortestPath(from: string, to: string): string[] {
+    const adj = this.latticeNeighbors();
+    const dist = new Map<string, number>([[from, 0]]);
+    const prev = new Map<string, string>();
+    const visited = new Set<string>();
+    // simple O(n²) scan — surface graphs here are small
+    for (;;) {
+      let cur: string | null = null;
+      let best = Infinity;
+      for (const [k, d] of dist) {
+        if (!visited.has(k) && d < best) {
+          best = d;
+          cur = k;
+        }
+      }
+      if (cur === null) return [];
+      if (cur === to) break;
+      visited.add(cur);
+      const base = dist.get(cur)!;
+      for (const nb of adj.get(cur) ?? []) {
+        if (visited.has(nb)) continue;
+        const w = len(sub(this.displaced(nb), this.displaced(cur)));
+        const alt = base + w;
+        if (alt < (dist.get(nb) ?? Infinity)) {
+          dist.set(nb, alt);
+          prev.set(nb, cur);
+        }
+      }
+    }
+    const path: string[] = [];
+    for (let k: string | undefined = to; k && k !== from; k = prev.get(k)) path.push(k);
+    path.push(from);
+    return path;
+  }
+
+  // -- constraints & nudges --------------------------------------------------------
+
+  private setConstraint(axis: 0 | 1 | 2, plane: boolean): void {
+    const c = this.constraint;
+    this.constraint = c && c.axis === axis && c.plane === plane ? null : { axis, plane };
+    this.ed.refreshOverlays();
+  }
+
+  /** With an axis constraint: step the selection along it, toward (+1) or away (−1) from the camera. */
+  private nudge(dir: 1 | -1): void {
+    const c = this.constraint;
+    if (!c || c.plane) return;
+    const keys = this.selectedLattice();
+    if (!keys.length) return;
+    const centroid = this.selectionCentroid()!;
+    const eye = this.ed.viewport.cameraPos();
+    const u = AXIS_UNITS[c.axis];
+    const toward = dot(u, sub(eye, centroid)) >= 0 ? 1 : -1;
+    const delta = mul(u, this.ed.gridStep * dir * toward);
+    const shifts: ShiftChange[] = [];
+    for (const lk of keys) {
+      const was = this.ed.doc.shifts.get(lk);
+      shifts.push({
+        key: lk,
+        before: was ? { ...was } : null,
+        after: clampOffset(add(was ?? v3(), delta)),
+      });
+    }
+    this.ed.commit({ shifts });
+    this.ed.refreshOverlays();
+  }
+
   // -- brushes -------------------------------------------------------------------
-  // All brushes act on the selected lattice corners; the doc clamps offsets to
-  // ±½ cell so geometry never strays far from its voxel.
+  // All brushes act on the selected corners; the doc clamps offsets to ±½ cell.
 
   private selectedLattice(): string[] {
     return [...this.ed.selectedVerts]
@@ -424,12 +451,7 @@ export class VertexMode {
     const lf = this.latticeFaces();
     this.applyBrush((lk) => {
       const cur = this.ed.doc.shifts.get(lk) ?? v3();
-      const faces = lf.get(lk);
-      if (!faces?.length) return cur;
-      let n = v3();
-      for (const f of faces) n = add(n, faceNormal(f.verts));
-      if (len(n) < 1e-9) return cur;
-      return add(cur, mul(norm(n), 0.25 * sign));
+      return add(cur, mul(this.latticeNormal(lk, lf), 0.25 * sign));
     });
   }
 
@@ -445,8 +467,22 @@ export class VertexMode {
   key(e: KeyboardEvent): boolean {
     const ed = this.ed;
     switch (e.key.toLowerCase()) {
-      case 'm':
-        this.mergeSelected();
+      case 'x':
+        this.setConstraint(0, e.shiftKey);
+        return true;
+      case 'y':
+        this.setConstraint(1, e.shiftKey);
+        return true;
+      case 'z':
+        this.setConstraint(2, e.shiftKey);
+        return true;
+      case '=':
+      case '+':
+        this.nudge(1);
+        return true;
+      case '-':
+      case '_':
+        this.nudge(-1);
         return true;
       case 'h':
         this.brushSmooth();
@@ -457,13 +493,18 @@ export class VertexMode {
       case 'j':
         this.brushInflate(-1);
         return true;
-      case 'y':
+      case 'n':
         this.brushNoise();
         return true;
       case 'o':
         this.applyBrush(() => null); // reset offsets
         return true;
       case 'escape':
+        if (this.constraint) {
+          this.constraint = null;
+          ed.refreshOverlays();
+          return true;
+        }
         if (ed.selectedVerts.size) {
           ed.selectedVerts.clear();
           ed.refreshOverlays();
@@ -476,7 +517,11 @@ export class VertexMode {
 
   statusInfo(): string {
     const n = this.ed.selectedVerts.size;
-    return n ? `${n} corner${n === 1 ? '' : 's'} selected` : '';
+    const parts: string[] = [];
+    if (n) parts.push(`${n} corner${n === 1 ? '' : 's'} selected`);
+    const c = this.constraint;
+    if (c) parts.push(c.plane ? `plane ⊥ ${'xyz'[c.axis]}` : `axis ${'xyz'[c.axis]} — = / − nudge`);
+    return parts.join('  ·  ');
   }
 }
 

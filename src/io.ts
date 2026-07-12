@@ -3,8 +3,7 @@ import type { Editor } from './editor';
 
 export interface SaveData {
   app: 'boxexplore';
-  /** 1 = free faces only; 2 adds volume cells + lattice shifts. Loader accepts both. */
-  version: 1 | 2;
+  version: 3;
   tileSize: number;
   tileset: string; // data URL
   doc: DocJSON;
@@ -13,7 +12,7 @@ export interface SaveData {
 export function serializeScene(ed: Editor): string {
   const data: SaveData = {
     app: 'boxexplore',
-    version: 2,
+    version: 3,
     tileSize: ed.tileset.tileSize,
     tileset: ed.tileset.toDataURL(),
     doc: ed.doc.toJSON(),

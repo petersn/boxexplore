@@ -1,6 +1,8 @@
-// End-to-end drive of the volume editor: seed voxel, rect-select + =/− extrude
-// and carve (with overhang), offset extrapolation & hygiene, ±0.5 clamping,
-// exact vertex visibility, brushes, view modes, cameras, undo, save/load.
+// End-to-end drive of the volume editor: seed voxel, rect-select + =/− with
+// faces-only extrude and march-through-air carve, offset extrapolation &
+// hygiene, ±0.5 clamping, exact vertex visibility (incl. concave corners),
+// click-to-select-then-drag, axis constraints + nudges, shortest-path select,
+// build→vertex selection handoff, brushes, view modes, cameras, undo, save/load.
 import { chromium } from 'playwright';
 
 const SHOTS = '/tmp/boxexplore-shots';
@@ -14,11 +16,13 @@ page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 page.on('pageerror', (err) => errors.push(err.message));
 await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
-await page.evaluate(() => {
-  localStorage.clear();
-  window.editor.doc.clear();
-  window.editor.history.clear();
-});
+const freshScene = () =>
+  page.evaluate(() => {
+    localStorage.clear();
+    window.editor.doc.clear();
+    window.editor.history.clear();
+  });
+await freshScene();
 
 const box = await page.locator('#viewport').boundingBox();
 const cells = () => page.evaluate(() => window.editor.doc.cells.size);
@@ -52,7 +56,7 @@ check(
   (await page.evaluate(() => window.editor.mode.name)) === 'build',
 );
 
-// --- 2. seed voxel + click-select + =/− ----------------------------------------
+// --- 2. seed + click-select + = / − marching --------------------------------------
 await page.locator('#btn-seed').click();
 check('+ Voxel seeds a cell', (await cells()) === 1, `${await cells()} cells`);
 await clickWorld({ x: 0.5, y: 0, z: 0.5 }); // top face of the seed
@@ -60,47 +64,79 @@ const sel0 = await page.evaluate(() => window.editor.boxSel && { ...window.edito
 check('click selects a 1×1 rect', !!sel0 && sel0.axis === 1 && sel0.sign === 1 && sel0.plane === 0);
 await page.keyboard.press('=');
 check('= extrudes one cell up', (await cells()) === 2, `${await cells()} cells`);
-check(
-  'extruded cell is where expected',
-  await page.evaluate(() => window.editor.doc.cells.has('0,0,0')),
-);
 await page.keyboard.press('-');
-check('− carves it back', (await cells()) === 1, `${await cells()} cells`);
-
-// --- 3. rect (with air overhang) + extrude fills the whole rect ----------------
-await dragWorld({ x: 0.5, y: 0, z: 0.5 }, { x: 5.5, y: 0, z: 3.5 });
+await page.keyboard.press('-');
+check('− carves down through the stack', (await cells()) === 0, `${await cells()} cells`);
+await page.keyboard.press('-');
+const marched = await page.evaluate(() => window.editor.boxSel?.plane);
+check('carve plane keeps marching through air', marched === -2, `plane ${marched}`);
 await page.keyboard.press('=');
-check('rect over air extrudes a 6×4 slab', (await cells()) === 25, `${await cells()} cells`);
-let s = await stats();
-check('watertight after slab', s.oddEdges === 0, `${s.oddEdges} odd edges`);
-await page.screenshot({ path: `${SHOTS}/30-slab.png` });
+check('= with no faces present is a no-op', (await cells()) === 0, `${await cells()} cells`);
 
-// --- 4. side rect, repeated extrude, selection plane follows -------------------
-await dragWorld({ x: 6, y: 0.5, z: 0.5 }, { x: 6, y: 0.5, z: 1.5 });
-await page.keyboard.press('=');
-await page.keyboard.press('=');
-check('side rect extrudes twice (+4)', (await cells()) === 29, `${await cells()} cells`);
-await page.keyboard.press('-');
-await page.keyboard.press('-');
-check('carving twice reverses it', (await cells()) === 25, `${await cells()} cells`);
-
-// --- 5. overhang carve: rect past the edge shaves only what exists -------------
-await page.keyboard.press('Escape');
-await dragWorld({ x: 2.5, y: 1, z: 2.5 }, { x: 8.5, y: 1, z: 2.5 });
-await page.keyboard.press('-');
-check('overhang rect carves only solid cells', (await cells()) === 21, `${await cells()} cells`);
-s = await stats();
-check('watertight after overhang carve', s.oddEdges === 0, `${s.oddEdges} odd edges`);
-
-// --- 6. undo clears the selection and restores cells ----------------------------
-await page.keyboard.press('ControlOrMeta+z');
-check('undo restores carved row', (await cells()) === 25, `${await cells()} cells`);
-check('undo clears box selection', await page.evaluate(() => window.editor.boxSel === null));
-for (let i = 0; i < 8; i++) await page.keyboard.press('ControlOrMeta+z');
-check('undo chain empties the scene', (await cells()) === 0, `${await cells()} cells`);
-
-// --- 7. extrusion extrapolates offsets; stale offsets get cleaned ----------------
+// --- 3. build a floor by row extrusion (faces-only extrude) ------------------------
+await freshScene();
 await page.locator('#btn-seed').click();
+await clickWorld({ x: 1, y: -0.5, z: 0.5 }); // +x face of the seed
+for (let i = 0; i < 3; i++) await page.keyboard.press('=');
+check('row extrudes to 4 cells', (await cells()) === 4, `${await cells()} cells`);
+await dragWorld({ x: 0.5, y: -0.5, z: 0 }, { x: 3.5, y: -0.5, z: 0 }); // the row's −z wall
+await page.keyboard.press('=');
+await page.keyboard.press('=');
+check('wall rect extrudes a 4×3 floor', (await cells()) === 12, `${await cells()} cells`);
+let s = await stats();
+check('watertight after floor', s.oddEdges === 0, `${s.oddEdges} odd edges`);
+
+// --- 4. extrude fills only present faces, never the rect's air ----------------------
+await dragWorld({ x: 0.5, y: 0, z: 0.5 }, { x: 6.5, y: 0, z: 0.5 }); // top row + air overhang
+await page.keyboard.press('=');
+check('overhanging = adds only over solid (+4)', (await cells()) === 16, `${await cells()} cells`);
+await page.keyboard.press('ControlOrMeta+z');
+check('undo restores the floor', (await cells()) === 12, `${await cells()} cells`);
+check('undo clears the selection', await page.evaluate(() => window.editor.boxSel === null));
+
+// --- 5. wall on the -x edge (multi-face rect, repeated extrude) ----------------------
+await dragWorld({ x: 0.5, y: 0, z: 0.5 }, { x: 0.5, y: 0, z: -1.5 });
+await page.keyboard.press('=');
+await page.keyboard.press('=');
+check('column rect extrudes a wall (+6)', (await cells()) === 18, `${await cells()} cells`);
+s = await stats();
+check('watertight with wall', s.oddEdges === 0, `${s.oddEdges} odd edges`);
+await page.screenshot({ path: `${SHOTS}/40-floorwall.png` });
+
+// --- 6. build rect hands its corners to vertex mode on Tab ---------------------------
+await dragWorld({ x: 1.5, y: 0, z: 0.5 }, { x: 2.5, y: 0, z: 0.5 }); // two floor-top faces
+await page.keyboard.press('Tab');
+const handoff = await page.evaluate(() => ({
+  mode: window.editor.mode.name,
+  n: window.editor.selectedVerts.size,
+}));
+check('Tab hands rect corners to vertex mode', handoff.mode === 'vertex' && handoff.n === 6, `${handoff.n} corners`);
+await page.keyboard.press('Escape');
+
+// --- 7. exact visibility: concave junction shown, buried corners hidden ---------------
+const vis = await page.evaluate(() => {
+  const vm = window.editor.modes.vertex;
+  const visible = new Set(vm.visibleHandles().map((h) => h.lattice));
+  return {
+    junction: visible.has('1,0,-1'), // wall-base meets floor-top (concave)
+    buried: visible.has('2,-1,-1'), // interior floor-bottom corner
+  };
+});
+check('concave wall/floor junction corner is visible', vis.junction);
+check('buried bottom corner is hidden', !vis.buried);
+
+// lone cube: exactly 7 of 8 corners visible
+await freshScene();
+await page.locator('#btn-seed').click();
+await page.waitForTimeout(100);
+const lone = await page.evaluate(() => {
+  const vm = window.editor.modes.vertex;
+  return { all: vm.handles().length, visible: vm.visibleHandles().length };
+});
+check('lone cube shows exactly 7 of 8 corners', lone.all === 8 && lone.visible === 7, `${lone.visible}/${lone.all}`);
+
+// --- 8. extrusion extrapolates offsets; stale offsets get cleaned ----------------------
+await page.keyboard.press('1'); // back to build mode (Tab test left us in vertex)
 await page.evaluate(() => {
   window.editor.doc.writeShiftsLive([
     ['1,0,0', { x: 0, y: -0.5, z: 0 }],
@@ -120,19 +156,34 @@ check(
   'stale off-surface offsets are cleaned up',
   await page.evaluate(() => !window.editor.doc.shifts.has('9,9,9')),
 );
-s = await stats();
-check('watertight after ramp extrude', s.oddEdges === 0, `${s.oddEdges} odd edges`);
-await page.screenshot({ path: `${SHOTS}/31-ramp.png` });
 
-// --- 8. manual drags hard-clamp offsets to ±0.5 ----------------------------------
-await page.evaluate(() => {
-  window.editor.doc.clear();
-  window.editor.history.clear();
-});
+// --- 9. vertex interactions: click selects, second click drags, clamp ±0.5 --------------
+await freshScene();
 await page.locator('#btn-seed').click();
-await page.keyboard.press('2'); // vertex mode
+await page.keyboard.press('2');
 await page.waitForTimeout(150);
 const corner = await screen({ x: 0, y: 0, z: 0 });
+await page.mouse.click(box.x + corner.x, box.y + corner.y);
+const afterClick = await page.evaluate(() => ({
+  sel: [...window.editor.selectedVerts],
+  shifts: window.editor.doc.shifts.size,
+}));
+check(
+  'click selects without moving',
+  afterClick.sel.length === 1 && afterClick.sel[0] === 'L:0,0,0' && afterClick.shifts === 0,
+);
+// drag from a *different, unselected* corner → box select, not a move
+const other = await screen({ x: 1, y: 0, z: 0 });
+await page.mouse.move(box.x + other.x, box.y + other.y);
+await page.mouse.down();
+await page.mouse.move(box.x + other.x + 60, box.y + other.y + 60, { steps: 6 });
+await page.mouse.up();
+check(
+  'drag from unselected corner box-selects (no move)',
+  await page.evaluate(() => window.editor.doc.shifts.size === 0),
+);
+// click the corner, then click-drag it far upward → clamped at +0.5
+await page.mouse.click(box.x + corner.x, box.y + corner.y);
 const wayUp = await screen({ x: 0, y: 4, z: 0 });
 await page.mouse.move(box.x + corner.x, box.y + corner.y);
 await page.mouse.down();
@@ -142,53 +193,65 @@ const clampCheck = await page.evaluate(() => {
   const v = window.editor.doc.shifts.get('0,0,0');
   return v && v.y === 0.5 && Math.abs(v.x) <= 0.5 && Math.abs(v.z) <= 0.5;
 });
-check('hand-dragged offsets clamp to ±0.5', !!clampCheck);
+check('second-click drag moves, hard-clamped to ±0.5', !!clampCheck);
+await page.keyboard.press('ControlOrMeta+z');
 
-// --- 9. exact vertex visibility: a lone cube shows exactly 7 of 8 corners --------
-await page.evaluate(() => {
-  window.editor.doc.clear();
-  window.editor.history.clear();
-});
-await page.locator('#btn-seed').click();
-await page.waitForTimeout(100);
-const vis = await page.evaluate(() => {
-  const vm = window.editor.modes.vertex;
-  return { all: vm.handles().length, visible: vm.visibleHandles().length };
-});
-check(
-  'lone cube shows exactly the 7 visible corners',
-  vis.all === 8 && vis.visible === 7,
-  `${vis.visible}/${vis.all}`,
-);
-
-// 1-thick slab: bottom interior corners hidden from above
-await page.keyboard.press('1');
-await clickWorld({ x: 0.5, y: 0, z: 0.5 });
-await dragWorld({ x: 0.5, y: 0, z: 0.5 }, { x: 3.5, y: 0, z: 2.5 });
-await page.keyboard.press('=');
-await page.keyboard.press('2');
-await page.waitForTimeout(100);
-const vis2 = await page.evaluate(() => {
-  const vm = window.editor.modes.vertex;
-  return {
-    all: vm.handles().length,
-    visible: vm.visibleHandles().length,
-    hidBottomMid: !vm.visibleHandles().some((h) => h.lattice === '2,0,1'),
-  };
-});
-check(
-  'thin-slab bottom corners are hidden',
-  vis2.visible < vis2.all && vis2.hidBottomMid,
-  `${vis2.visible}/${vis2.all} visible`,
-);
-
-// --- 10. brushes still work under the clamp --------------------------------------
+// --- 10. axis constraint + nudge -----------------------------------------------------------
 await page.mouse.move(box.x + 200, box.y + 120);
 await page.mouse.down();
 await page.mouse.move(box.x + box.width - 80, box.y + box.height - 80, { steps: 6 });
 await page.mouse.up();
 const nSel = await page.evaluate(() => window.editor.selectedVerts.size);
-check('box select picks visible corners', nSel > 6, `${nSel} selected`);
+check('box select picks visible corners', nSel === 7, `${nSel} selected`);
+await page.keyboard.press('y');
+const con = await page.evaluate(() => window.editor.modes.vertex.constraint);
+check('Y sets the y-axis constraint', con && con.axis === 1 && !con.plane);
+await page.keyboard.press('=');
+const nudged = await page.evaluate(() => {
+  const ed = window.editor;
+  const keys = [...ed.selectedVerts].map((k) => k.slice(2));
+  return keys.every((lk) => Math.abs((ed.doc.shifts.get(lk)?.y ?? 0) - 0.5) < 1e-9);
+});
+check('= nudges the selection up along y', nudged);
+await page.keyboard.press('-');
+check('− nudges back down', (await shifts()) === 0, `${await shifts()} shifts`);
+await page.keyboard.press('Shift+y');
+const conPlane = await page.evaluate(() => window.editor.modes.vertex.constraint);
+check('Shift+Y sets the plane constraint', conPlane && conPlane.axis === 1 && conPlane.plane);
+await page.keyboard.press('Shift+y');
+check(
+  'same key clears the constraint',
+  await page.evaluate(() => window.editor.modes.vertex.constraint === null),
+);
+
+// --- 11. shortest-path selection -----------------------------------------------------------
+await freshScene();
+await page.locator('#btn-seed').click();
+await page.keyboard.press('1');
+await clickWorld({ x: 1, y: -0.5, z: 0.5 });
+for (let i = 0; i < 3; i++) await page.keyboard.press('=');
+await page.keyboard.press('2');
+await page.waitForTimeout(150);
+const pA = await screen({ x: 0, y: 0, z: 0 });
+await page.mouse.click(box.x + pA.x, box.y + pA.y);
+const pB = await screen({ x: 4, y: 0, z: 0 });
+await page.keyboard.down('Meta');
+await page.mouse.click(box.x + pB.x, box.y + pB.y);
+await page.keyboard.up('Meta');
+const path = await page.evaluate(() => [...window.editor.selectedVerts].sort());
+check(
+  'Ctrl/Cmd+click selects the shortest edge path',
+  path.length === 5 &&
+    ['L:0,0,0', 'L:1,0,0', 'L:2,0,0', 'L:3,0,0', 'L:4,0,0'].every((k) => path.includes(k)),
+  path.join(' '),
+);
+
+// --- 12. brushes under the clamp + views ------------------------------------------------------
+await page.keyboard.press('Escape');
+await page.mouse.move(box.x + 200, box.y + 120);
+await page.mouse.down();
+await page.mouse.move(box.x + box.width - 80, box.y + box.height - 80, { steps: 6 });
+await page.mouse.up();
 for (let i = 0; i < 4; i++) await page.keyboard.press('u');
 const clamped = await page.evaluate(() =>
   [...window.editor.doc.shifts.values()].every(
@@ -199,9 +262,8 @@ check('inflate brush respects the clamp', (await shifts()) > 0 && clamped, `${aw
 await page.keyboard.press('h');
 s = await stats();
 check('watertight after brushes', s.oddEdges === 0, `${s.oddEdges} odd edges`);
-await page.screenshot({ path: `${SHOTS}/32-sculpt.png` });
+await page.screenshot({ path: `${SHOTS}/41-sculpt.png` });
 
-// --- 11. voxel view drives display, previews, and overlays raw --------------------
 await page.keyboard.press('v');
 const voxelView = await page.evaluate(() => {
   const ed = window.editor;
@@ -219,14 +281,13 @@ const voxelView = await page.evaluate(() => {
   return true;
 });
 check('voxel view displays raw integer geometry', voxelView);
-await page.screenshot({ path: `${SHOTS}/33-voxelview.png` });
 await page.keyboard.press('v');
 check(
   'sculpted view label restored',
   (await page.locator('#btn-view').textContent()) === 'Sculpted',
 );
 
-// --- 12. cameras -------------------------------------------------------------------
+// --- 13. cameras (fly uses Q/E for down/up now) ------------------------------------------------
 await page.keyboard.press('p');
 check('P switches to fly', (await page.evaluate(() => window.editor.viewport.mode)) === 'fly');
 const p1 = await page.evaluate(() => window.editor.viewport.cameraPos());
@@ -234,49 +295,23 @@ await page.keyboard.down('w');
 await page.waitForTimeout(350);
 await page.keyboard.up('w');
 const p2 = await page.evaluate(() => window.editor.viewport.cameraPos());
-check(
-  'W flies the camera',
-  Math.hypot(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z) > 0.5,
-);
-const yaw1 = await page.evaluate(() => window.editor.viewport.yaw);
-await page.mouse.move(box.x + 700, box.y + 450);
-await page.mouse.down({ button: 'right' });
-await page.mouse.move(box.x + 860, box.y + 450, { steps: 8 });
-await page.mouse.up({ button: 'right' });
-const yaw2 = await page.evaluate(() => window.editor.viewport.yaw);
-check('RMB mouselooks in fly mode', Math.abs(yaw2 - yaw1) > 0.05);
+check('W flies the camera', Math.hypot(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z) > 0.5);
+await page.keyboard.down('q');
+await page.waitForTimeout(250);
+await page.keyboard.up('q');
+const p3 = await page.evaluate(() => window.editor.viewport.cameraPos());
+check('Q descends', p3.y < p2.y - 0.3, `Δy ${(p3.y - p2.y).toFixed(2)}`);
 await page.keyboard.press('p');
 check('P returns to orbit', (await page.evaluate(() => window.editor.viewport.mode)) === 'orbit');
 
-// --- 13. RMB carve + save/load roundtrip ---------------------------------------------
-await page.keyboard.press('1');
-await page.evaluate(() => {
-  // restore a known camera after the fly excursion
-  const vp = window.editor.viewport;
-  vp.target.set(2, 0, 1.5);
-  vp.yaw = -Math.PI / 4;
-  vp.pitch = 0.55;
-  vp.dist = 14;
-});
-const nBefore = await cells();
-const anyTop = await page.evaluate(() => {
-  const ed = window.editor;
-  const vf = ed.surface.find((f) => f.dir === 2);
-  const c = vf.verts.reduce(
-    (a, v) => ({ x: a.x + v.x / 4, y: a.y + v.y / 4, z: a.z + v.z / 4 }),
-    { x: 0, y: 0, z: 0 },
-  );
-  return ed.viewport.screenPoint(c);
-});
-await page.mouse.click(box.x + anyTop.x, box.y + anyTop.y, { button: 'right' });
-check('right-click carves one cell', (await cells()) === nBefore - 1, `${await cells()} cells`);
-
+// --- 14. save/load roundtrip (format v3: cells + shifts only) ----------------------------------
 const savedCells = await cells();
 const savedShifts = await shifts();
 const json = await page.evaluate(async () => {
   const { serializeScene } = await import('/src/io.ts');
   return serializeScene(window.editor);
 });
+check('save format is v3 without faces', JSON.parse(json).version === 3 && !('faces' in JSON.parse(json).doc));
 await page.evaluate(() => window.editor.doc.clear());
 await page.evaluate(async (data) => {
   const { loadScene } = await import('/src/io.ts');

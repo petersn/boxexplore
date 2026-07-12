@@ -67,7 +67,8 @@ export class Viewport {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
       const k = e.key.toLowerCase();
-      if (['w', 'a', 's', 'd', 'z', ' ', 'shift'].includes(k)) {
+      // q/e fly down/up (z is reserved for the vertex-mode axis constraint)
+      if (['w', 'a', 's', 'd', 'q', 'e', ' ', 'shift'].includes(k)) {
         this.held.add(k);
         if (k === ' ') e.preventDefault();
       }
@@ -148,8 +149,8 @@ export class Viewport {
     if (this.held.has('s')) move.addScaledVector(fwd, -speed);
     if (this.held.has('d')) move.addScaledVector(right, speed);
     if (this.held.has('a')) move.addScaledVector(right, -speed);
-    if (this.held.has(' ')) move.y += speed;
-    if (this.held.has('z')) move.y -= speed;
+    if (this.held.has(' ') || this.held.has('e')) move.y += speed;
+    if (this.held.has('q')) move.y -= speed;
     if (this.mode === 'fly') this.position.add(move);
     else this.target.add(move);
   }

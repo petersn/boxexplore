@@ -1,57 +1,10 @@
 import * as THREE from 'three';
-import type { Face } from './model';
 import type { Vec3 } from './vec';
 import type { VolFace } from './volume';
 
-/**
- * Build (or refill) a BufferGeometry from face snapshots.
- * Returns the triangle-index → face-id map used to resolve raycasts.
- */
-export function buildGeometry(faces: readonly Face[], geometry: THREE.BufferGeometry): number[] {
-  const count = faces.length;
-  const positions = new Float32Array(count * 4 * 3);
-  const uvs = new Float32Array(count * 4 * 2);
-  const indices = count * 4 > 65535 ? new Uint32Array(count * 6) : new Uint16Array(count * 6);
-  const triFace: number[] = new Array(count * 2);
-
-  let pi = 0;
-  let ui = 0;
-  let ii = 0;
-  for (let i = 0; i < count; i++) {
-    const f = faces[i];
-    for (let k = 0; k < 4; k++) {
-      positions[pi++] = f.verts[k].x;
-      positions[pi++] = f.verts[k].y;
-      positions[pi++] = f.verts[k].z;
-      uvs[ui++] = f.uvs[k].x;
-      uvs[ui++] = f.uvs[k].y;
-    }
-    const base = i * 4;
-    if (f.flipDiag) {
-      indices[ii++] = base + 0;
-      indices[ii++] = base + 1;
-      indices[ii++] = base + 3;
-      indices[ii++] = base + 1;
-      indices[ii++] = base + 2;
-      indices[ii++] = base + 3;
-    } else {
-      indices[ii++] = base + 0;
-      indices[ii++] = base + 1;
-      indices[ii++] = base + 2;
-      indices[ii++] = base + 0;
-      indices[ii++] = base + 2;
-      indices[ii++] = base + 3;
-    }
-    triFace[i * 2] = f.id;
-    triFace[i * 2 + 1] = f.id;
-  }
-
-  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  geometry.computeBoundingSphere();
-  geometry.computeBoundingBox();
-  return triFace;
+/** Anything with four corners, [bl, br, tr, tl]. */
+export interface Quad {
+  verts: readonly [Vec3, Vec3, Vec3, Vec3];
 }
 
 // Fixed light for the untextured volume surface: mostly overhead with a slight
@@ -59,8 +12,35 @@ export function buildGeometry(faces: readonly Face[], geometry: THREE.BufferGeom
 const LIGHT: Vec3 = { x: 0.372, y: 0.904, z: 0.213 };
 const VOL_BASE: Vec3 = { x: 0.78, y: 0.8, z: 0.85 };
 const AO_CURVE = [0.55, 0.72, 0.86, 1];
-// Highlight color for displaced lattice verts in the voxel debug view.
+// Highlight color for displaced lattice corners in the voxel debug view.
 const SHIFT_TINT: Vec3 = { x: 1.0, y: 0.5, z: 0.12 };
+
+/** Build (or refill) untextured quad geometry (ghosts, selection overlays). */
+export function buildQuadGeometry(quads: readonly Quad[], geometry: THREE.BufferGeometry): void {
+  const count = quads.length;
+  const positions = new Float32Array(count * 4 * 3);
+  const indices = count * 4 > 65535 ? new Uint32Array(count * 6) : new Uint16Array(count * 6);
+  let pi = 0;
+  let ii = 0;
+  for (let i = 0; i < count; i++) {
+    const q = quads[i];
+    for (let k = 0; k < 4; k++) {
+      positions[pi++] = q.verts[k].x;
+      positions[pi++] = q.verts[k].y;
+      positions[pi++] = q.verts[k].z;
+    }
+    const base = i * 4;
+    indices[ii++] = base + 0;
+    indices[ii++] = base + 1;
+    indices[ii++] = base + 2;
+    indices[ii++] = base + 0;
+    indices[ii++] = base + 2;
+    indices[ii++] = base + 3;
+  }
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.computeBoundingSphere();
+}
 
 /**
  * Build (or refill) a BufferGeometry from derived volume faces, shaded per
@@ -149,7 +129,7 @@ export function buildVolGeometry(
   return triKey;
 }
 
-/** Line-segment geometry outlining each face's quad border. */
+/** Line-segment geometry outlining each quad's border. */
 export function buildOutlineGeometry(
   faces: ReadonlyArray<{ verts: readonly Vec3[] }>,
   geometry: THREE.BufferGeometry,
@@ -170,29 +150,6 @@ export function buildOutlineGeometry(
   }
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.computeBoundingSphere();
-}
-
-/** The scene's merged tile mesh plus picking support. */
-export class SceneMesh {
-  readonly geometry = new THREE.BufferGeometry();
-  readonly mesh: THREE.Mesh;
-  private triFace: number[] = [];
-
-  constructor(material: THREE.Material) {
-    this.mesh = new THREE.Mesh(this.geometry, material);
-    this.mesh.frustumCulled = false;
-    this.mesh.matrixAutoUpdate = false;
-  }
-
-  rebuild(faces: readonly Face[]): void {
-    this.triFace = buildGeometry(faces, this.geometry);
-  }
-
-  faceIdAt(intersection: THREE.Intersection): number | null {
-    const idx = intersection.faceIndex;
-    if (idx == null) return null;
-    return this.triFace[idx] ?? null;
-  }
 }
 
 /** The derived volume-boundary mesh plus picking support (tri → face key). */

@@ -26,20 +26,26 @@ organic terrain without breaking the seal.
 - **Build mode (1)** — the core flow: **click a face** (a 1×1 selection) or **drag
   a rectangle** across its plane — the rect is axis-aligned automatically and may
   overhang into the air or across other geometry. Then press **`=`** to extrude
-  the rect one layer outward (air in the rect gets filled — this is also how you
-  build floors and walls from scratch) or **`−`** to carve one layer inward
-  (overhanging air is skipped; repeated `−` shaves a region flat). The selection
-  plane follows the surface, so repeated presses keep extruding. Extrusion
-  *carries corner offsets with it*: extruding the side of a ramp yields more
-  ramp, and offsets stranded off the surface are cleaned up so nothing invisible
-  ever wiggles new geometry. `Esc` clears; right-click carves a single cell;
-  the **+ Voxel** toolbar button seeds a cell when the scene is empty.
-- **Vertex mode (2)** — drag corners to sculpt (snap defaults to ½ steps). Plain
-  drags move in the camera-facing plane; `Shift` constrains to the corner's
-  surface normal; `Alt` unsnaps. Only corners the camera can actually see are
-  shown and pickable. Brushes act on the selection: `H` smooths (breaks edges
-  into natural slopes), `U`/`J` inflate/deflate along the surface normal, `Y`
-  adds organic noise, `O` resets.
+  the faces present in the rect one layer outward (the rect's air stays air) or
+  **`−`** to carve one layer of the whole footprint inward (overhang and all;
+  the carve plane keeps marching even through empty space, so you can shave a
+  region flat or dig as deep as you like). The selection plane follows the
+  surface, so repeated presses keep going. Extrusion *carries corner offsets
+  with it*: extruding the side of a ramp yields more ramp, and offsets stranded
+  off the surface are cleaned up so nothing invisible ever wiggles new geometry.
+  `Esc` clears; `Tab` hands the rect's corners to vertex mode; the **+ Voxel**
+  toolbar button seeds a cell when the scene is empty.
+- **Vertex mode (2)** — sculpting (snap defaults to ½ steps). **Click** selects a
+  corner; **click a selected corner again** to drag it; dragging from anywhere
+  else box-selects (`Shift` adds); `Ctrl/Cmd+click` selects the shortest edge
+  path from the last-picked corner (great for following edges). **X/Y/Z**
+  constrain movement to a world axis, `Shift+X/Y/Z` to the plane normal to it
+  (an axis widget shows the constraint; the same key clears it) — and with an
+  axis set, **`=`/`−`** nudge the whole selection along it toward/away from the
+  camera. Only corners the camera can actually see are shown and pickable.
+  Brushes act on the selection: `H` smooths (breaks edges into natural slopes),
+  `U`/`J` inflate/deflate along the surface normal, `N` adds organic noise, `O`
+  resets.
 
 The camera has two modes (`P` toggles): **orbit** (CAD-style pivot) and **fly**
 (Minecraft-creative-style — WASD + mouselook, no pivot). `V` toggles between the
@@ -61,17 +67,16 @@ shortcut list.
 | --- | --- |
 | `src/model.ts` | document: volume cells + clamped lattice shifts, reversible edit ops, undo |
 | `src/volume.ts` | surface derivation, AO, offset hygiene/extrapolation, visibility DDA |
-| `src/meshbuilder.ts` | doc → BufferGeometry (shaded volume + legacy quads), picking maps |
+| `src/meshbuilder.ts` | doc → BufferGeometry (shaded volume, overlay quads), picking map |
 | `src/viewport.ts` | renderer, orbit/fly camera, ray picking, grid visuals |
 | `src/build.ts` / `src/vertex.ts` | the two editor modes |
 | `src/tileset.ts` / `src/palette.ts` | tileset canvas + picker (texturing comes later) |
-| `src/frame.ts` | plane/frame math helpers (grid, future face-frame texturing) |
+| `src/frame.ts` | small plane-frame math helpers (grid, ray picking) |
 | `src/editor.ts` | glue: input routing, overlays, toolbar, persistence |
 
 The scene format is plain JSON
-(`{ tileSize, tileset: dataURL, doc: { cells, shifts, faces } }`) — the future game
-runtime will consume it directly. (`faces` is a legacy free-quad layer that still
-renders but is no longer edited.)
+(`{ tileSize, tileset: dataURL, doc: { cells, shifts } }`) — the future game
+runtime will consume it directly.
 
 ## Roadmap
 
