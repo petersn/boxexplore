@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>boxexplore editor</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="topbar">
+        <span id="logo">boxexplore</span>
+        <span class="tb-group" id="mode-buttons">
+          <button data-mode="build" title="Build mode — rect-select faces, extrude/carve (1)">Build</button>
+          <button data-mode="vertex" title="Vertex mode — sculpt corners (2)">Vertex</button>
+        </span>
+        <span class="tb-group">
+          <label>Grid
+            <select id="grid-step" title="Vertex snap step ([ and ] cycle)">
+              <option value="1">1</option>
+              <option value="0.5">1/2</option>
+              <option value="0.25">1/4</option>
+              <option value="0.125">1/8</option>
+            </select>
+          </label>
+        </span>
+        <span class="tb-group">
+          <button id="btn-camera" title="Toggle camera: orbit around a pivot / free fly (P)">Orbit</button>
+          <button id="btn-view" title="Toggle view: sculpted / raw-voxel debug with displaced corners highlighted (V)">Sculpted</button>
+        </span>
+        <span class="tb-group">
+          <button id="btn-seed" title="Add a single voxel near the origin (for when the scene is empty)">+ Voxel</button>
+        </span>
+        <span class="tb-group">
+          <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+          <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+        </span>
+        <span class="tb-group">
+          <button id="btn-new" title="Clear scene">New</button>
+          <button id="btn-save" title="Save scene to file (Ctrl+S)">Save</button>
+          <button id="btn-open" title="Open scene file (Ctrl+O)">Open</button>
+        </span>
+        <span class="tb-spacer"></span>
+        <button id="btn-help" title="Keyboard shortcuts (?)">?</button>
+      </div>
+      <div id="main">
+        <div id="sidebar">
+          <div class="panel">
+            <div class="panel-title">Tileset</div>
+            <div id="palette-wrap"><canvas id="palette"></canvas></div>
+            <div class="row">
+              <button id="btn-load-tileset" title="Load a tileset image (or drag & drop one anywhere)">Load image…</button>
+              <label>Tile px <input id="tile-size" type="number" min="2" max="256" step="1" value="16" /></label>
+            </div>
+            <div class="hint">Drag on the tileset to pick a multi-tile stamp.</div>
+          </div>
+          <div class="panel">
+            <div class="panel-title">Mode</div>
+            <div id="status"></div>
+          </div>
+        </div>
+        <div id="viewport-wrap">
+          <canvas id="viewport"></canvas>
+          <div id="selbox" hidden></div>
+          <div id="statusbar"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="help-overlay" hidden>
+      <div id="help-card">
+        <h2>Shortcuts</h2>
+        <div class="help-cols">
+          <table>
+            <tr><th colspan="2">General</th></tr>
+            <tr><td>1 / 2</td><td>Build / Vertex mode</td></tr>
+            <tr><td>Tab</td><td>Toggle mode</td></tr>
+            <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
+            <tr><td>Ctrl+S / Ctrl+O</td><td>Save / Open scene</td></tr>
+            <tr><td>[ / ]</td><td>Cycle vertex snap step</td></tr>
+            <tr><td>?</td><td>Toggle this help</td></tr>
+            <tr><th colspan="2">Camera &amp; view</th></tr>
+            <tr><td>P</td><td>Toggle camera: orbit (pivot) / fly (free look)</td></tr>
+            <tr><td>Right-drag</td><td>Orbit — or mouselook in fly mode</td></tr>
+            <tr><td>Middle-drag</td><td>Pan</td></tr>
+            <tr><td>Wheel</td><td>Zoom — or dolly in fly mode</td></tr>
+            <tr><td>W A S D</td><td>Move (Space up, Z down, Shift fast)</td></tr>
+            <tr><td>C</td><td>Center camera on selection / volume</td></tr>
+            <tr><td>V</td><td>Toggle voxel debug view (offsets ignored, displaced corners orange)</td></tr>
+          </table>
+          <table>
+            <tr><th colspan="2">Build mode</th></tr>
+            <tr><td>Click a face</td><td>Select a 1×1 rect on its plane</td></tr>
+            <tr><td>Drag from a face</td><td>Select a rect on its plane — overhang into air is fine</td></tr>
+            <tr><td>=</td><td>Extrude: fill the rect one layer outward</td></tr>
+            <tr><td>− / Delete</td><td>Carve: remove one layer of the rect inward</td></tr>
+            <tr><td>Esc</td><td>Clear selection</td></tr>
+            <tr><td>Right-click</td><td>Carve one cell</td></tr>
+            <tr><td>+ Voxel (toolbar)</td><td>Seed a cell near the origin when the scene is empty</td></tr>
+            <tr><th colspan="2">Vertex mode</th></tr>
+            <tr><td>Click / drag</td><td>Move corners in the view plane (only visible corners show)</td></tr>
+            <tr><td>Shift+drag</td><td>Move along the corner's surface normal</td></tr>
+            <tr><td>Alt while dragging</td><td>Disable snap</td></tr>
+            <tr><td>Drag empty space</td><td>Box select visible corners</td></tr>
+            <tr><td>H</td><td>Smooth brush — relax selected corners toward neighbors</td></tr>
+            <tr><td>U / J</td><td>Inflate / deflate selected corners along their normal</td></tr>
+            <tr><td>Y</td><td>Noise brush — organic jitter</td></tr>
+            <tr><td>O</td><td>Reset selected corner offsets</td></tr>
+            <tr><td colspan="2" class="hint">All corner offsets are hard-clamped to ±½ cell on every axis.</td></tr>
+          </table>
+        </div>
+        <div class="hint">Click anywhere to close</div>
+      </div>
+    </div>
+
+    <input type="file" id="file-tileset" accept="image/*" hidden />
+    <input type="file" id="file-scene" accept=".json,application/json" hidden />
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
