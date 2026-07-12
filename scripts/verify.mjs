@@ -110,12 +110,12 @@ const handoff = await page.evaluate(() => ({
   mode: window.editor.mode.name,
   n: window.editor.selectedVerts.size,
 }));
-check('Tab hands rect corners to vertex mode', handoff.mode === 'vertex' && handoff.n === 6, `${handoff.n} corners`);
+check('Tab hands rect corners to sculpt mode', handoff.mode === 'sculpt' && handoff.n === 6, `${handoff.n} corners`);
 await page.keyboard.press('Escape');
 
 // --- 7. exact visibility: concave junction shown, buried corners hidden ---------------
 const vis = await page.evaluate(() => {
-  const vm = window.editor.modes.vertex;
+  const vm = window.editor.modes.sculpt;
   const visible = new Set(vm.visibleHandles().map((h) => h.lattice));
   return {
     junction: visible.has('1,0,-1'), // wall-base meets floor-top (concave)
@@ -130,7 +130,7 @@ await freshScene();
 await page.locator('#btn-seed').click();
 await page.waitForTimeout(100);
 const lone = await page.evaluate(() => {
-  const vm = window.editor.modes.vertex;
+  const vm = window.editor.modes.sculpt;
   return { all: vm.handles().length, visible: vm.visibleHandles().length };
 });
 check('lone cube shows exactly 7 of 8 corners', lone.all === 8 && lone.visible === 7, `${lone.visible}/${lone.all}`);
@@ -204,7 +204,7 @@ await page.mouse.up();
 const nSel = await page.evaluate(() => window.editor.selectedVerts.size);
 check('box select picks visible corners', nSel === 7, `${nSel} selected`);
 await page.keyboard.press('y');
-const con = await page.evaluate(() => window.editor.modes.vertex.constraint);
+const con = await page.evaluate(() => window.editor.modes.sculpt.constraint);
 check('Y sets the y-axis constraint', con && con.axis === 1 && !con.plane);
 await page.keyboard.press('=');
 const nudged = await page.evaluate(() => {
@@ -216,12 +216,12 @@ check('= nudges the selection up along y', nudged);
 await page.keyboard.press('-');
 check('− nudges back down', (await shifts()) === 0, `${await shifts()} shifts`);
 await page.keyboard.press('Shift+y');
-const conPlane = await page.evaluate(() => window.editor.modes.vertex.constraint);
+const conPlane = await page.evaluate(() => window.editor.modes.sculpt.constraint);
 check('Shift+Y sets the plane constraint', conPlane && conPlane.axis === 1 && conPlane.plane);
 await page.keyboard.press('Shift+y');
 check(
   'same key clears the constraint',
-  await page.evaluate(() => window.editor.modes.vertex.constraint === null),
+  await page.evaluate(() => window.editor.modes.sculpt.constraint === null),
 );
 
 // --- 11. shortest-path selection -----------------------------------------------------------
@@ -267,7 +267,7 @@ await page.screenshot({ path: `${SHOTS}/41-sculpt.png` });
 await page.keyboard.press('v');
 const voxelView = await page.evaluate(() => {
   const ed = window.editor;
-  if (ed.viewMode !== 'voxels') return false;
+  if (ed.geomView !== 'voxels') return false;
   for (const f of ed.displaySurface) {
     for (const v of f.verts) {
       if (
@@ -280,11 +280,109 @@ const voxelView = await page.evaluate(() => {
   }
   return true;
 });
-check('voxel view displays raw integer geometry', voxelView);
+check('voxel geometry view displays raw integer geometry', voxelView);
+await page.keyboard.press('t');
+const texState = await page.evaluate(() => ({
+  tex: window.editor.texView,
+  geom: window.editor.geomView,
+}));
+check(
+  'texture toggle is independent of geometry toggle',
+  texState.tex === 'untextured' && texState.geom === 'voxels',
+);
+await page.screenshot({ path: `${SHOTS}/42-voxel-untextured.png` });
 await page.keyboard.press('v');
 check(
-  'sculpted view label restored',
-  (await page.locator('#btn-view').textContent()) === 'Sculpted',
+  'untextured view survives geometry toggle (sculpted+untextured)',
+  await page.evaluate(
+    () => window.editor.geomView === 'sculpted' && window.editor.texView === 'untextured',
+  ),
+);
+await page.keyboard.press('t');
+check(
+  'view button labels restored',
+  (await page.locator('#btn-geom').textContent()) === 'Sculpted' &&
+    (await page.locator('#btn-tex').textContent()) === 'Textured',
+);
+
+// --- 12b. spatial sculpt brushes -----------------------------------------------------------
+await freshScene();
+await page.locator('#btn-seed').click();
+await page.keyboard.press('1');
+// small plateau: row of 3, widened to 3×3, plus a box on top (hard edges to smooth)
+await clickWorld({ x: 1, y: -0.5, z: 0.5 });
+await page.keyboard.press('=');
+await page.keyboard.press('=');
+await dragWorld({ x: 0.5, y: -0.5, z: 0 }, { x: 2.5, y: -0.5, z: 0 });
+await page.keyboard.press('=');
+await page.keyboard.press('=');
+await clickWorld({ x: 1.5, y: 0, z: -0.5 }); // top of the middle cell
+await page.keyboard.press('=');
+check('plateau + box built', (await cells()) === 10, `${await cells()} cells`);
+await page.keyboard.press('2');
+await page.waitForTimeout(150);
+
+await page.keyboard.press('b');
+check(
+  'B activates the smooth brush',
+  (await page.evaluate(() => window.editor.modes.sculpt.tool)) === 'smooth',
+);
+await page.evaluate(() => {
+  window.editor.brush.radius = 2;
+  window.editor.brush.strength = 0.8;
+});
+const boxTop = { x: 1.5, y: 1, z: -0.5 };
+await dragWorld(boxTop, { x: 2.5, y: 0, z: -0.5 }, { steps: 14 });
+check(
+  'smooth brush rounds hard voxel edges (offsets appear)',
+  (await shifts()) > 4,
+  `${await shifts()} shifts`,
+);
+s = await stats();
+check('watertight after smooth brush', s.oddEdges === 0, `${s.oddEdges} odd edges`);
+await page.screenshot({ path: `${SHOTS}/43-smoothed.png` });
+
+// draw brush with topology: strokes grow new voxels, Alt digs them away
+await page.keyboard.press('f');
+check(
+  'F activates the draw brush',
+  (await page.evaluate(() => window.editor.modes.sculpt.tool)) === 'draw',
+);
+await page.locator('#brush-topo').check();
+check('topology checkbox wires up', await page.evaluate(() => window.editor.brush.topo === true));
+await page.locator('#brush-strength').fill('1');
+check(
+  'strength slider wires up',
+  await page.evaluate(() => window.editor.brush.strength === 1),
+);
+const beforeGrow = await cells();
+const spot = { x: 0.5, y: 0, z: -1.5 }; // flat corner of the plateau
+for (let i = 0; i < 3; i++) await dragWorld(spot, { x: 1, y: 0, z: -1.5 }, { steps: 8 });
+const afterGrow = await cells();
+check('draw brush with topology grows new voxels', afterGrow > beforeGrow, `${beforeGrow} -> ${afterGrow}`);
+s = await stats();
+check('watertight after brush growth', s.oddEdges === 0, `${s.oddEdges} odd edges`);
+await page.screenshot({ path: `${SHOTS}/44-grown.png` });
+
+await page.keyboard.down('Alt');
+for (let i = 0; i < 4; i++) await dragWorld({ x: 1, y: 1, z: -1.5 }, { x: 0.5, y: 1, z: -1.5 }, { steps: 8 });
+await page.keyboard.up('Alt');
+const afterDig = await cells();
+check('Alt+draw digs voxels away', afterDig < afterGrow, `${afterGrow} -> ${afterDig}`);
+s = await stats();
+check('watertight after digging', s.oddEdges === 0, `${s.oddEdges} odd edges`);
+
+// a single stroke (cells + offsets) is a single undo step
+await freshScene();
+await page.locator('#btn-seed').click();
+const oneBefore = await cells();
+await dragWorld({ x: 0.5, y: 0, z: 0.5 }, { x: 0.5, y: 0, z: 0.4 }, { steps: 10 });
+const oneAfter = await cells();
+await page.keyboard.press('ControlOrMeta+z');
+check(
+  'brush stroke undoes as one op',
+  oneAfter > oneBefore && (await cells()) === oneBefore && (await shifts()) === 0,
+  `${oneBefore} -> ${oneAfter} -> ${await cells()}`,
 );
 
 // --- 13. cameras (fly uses Q/E for down/up now) ------------------------------------------------

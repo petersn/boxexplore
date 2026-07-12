@@ -24,13 +24,19 @@ Three.js, no UI framework. See README.md for controls and file roles.
   whole footprint (and its plane keeps marching even through empty space), via
   `BuildMode.extrudeStep`. RMB is intentionally unbound (reserved). Tab from build
   to vertex hands the rect's corners over as the vertex selection.
-- Vertex mode: click selects; a second click on a selected corner drags; any other
-  drag box-selects (Shift adds); Ctrl/Cmd+click = shortest-path select (Dijkstra
-  over surface edges, `lastPicked` anchor). X/Y/Z set blender-style constraints
-  (`VertexMode.constraint`, Shift = plane); with an axis, `=`/`-` nudge along it
-  toward/away from the camera. Drags with no constraint move in the camera plane,
-  snapped per world axis. Camera fly-down is Q (E/Space up) — Z is reserved for
-  the axis constraint.
+- Sculpt mode has three tools (`SculptMode.tool`, keys M/B/F): Select behaves as
+  before (click selects; second click on a selected corner drags; other drags
+  box-select; Ctrl/Cmd+click = shortest-path select; X/Y/Z blender-style
+  constraints, Shift = plane; `=`/`-` nudge along the axis). The Smooth and Draw
+  brushes paint over `editor.brush.radius` with falloff: Smooth relaxes the
+  displaced surface toward neighbor averages (rounds voxel edges even at zero
+  offsets); Draw pushes along vertex normals (Alt inverts). With
+  `editor.brush.topo`, a brush pushing past the ±½ clamp flips the voxel and
+  REBASES the offset onto the new ring (want − dir), keeping the surface
+  continuous so strokes converge instead of oscillating; strokes accumulate into
+  ONE undo op (`writeCellsLive`/`writeShiftsLive` live, `commitApplied` at end,
+  off-surface offsets cleaned at stroke end). Camera fly-down is Q (E/Space up)
+  — Z is reserved for the axis constraint.
 - Cell ops must keep offset hygiene: route shift changes through
   `planShiftChanges` (volume.ts) — it clears offsets leaving the surface and
   copies offsets onto newly exposed corners from one layer back along the
@@ -45,24 +51,27 @@ Three.js, no UI framework. See README.md for controls and file roles.
   free-quad layer is fully deleted (scene format v3 = `{cells, shifts}` only).
   Future texturing = per-cell-face tile assignment on the derived surface, not
   new quads. Quad corners are ordered [bl, br, tr, tl] (`CORNERS` in volume.ts).
-- Modes: 1 Build, 2 Vertex. Grid step is per-mode (`editor.gridStep` accessor;
-  vertex defaults to 0.5) and only affects vertex snapping + the reference grid.
+- Modes: 1 Build, 2 Sculpt. Grid step is per-mode (`editor.gridStep` accessor;
+  sculpt defaults to 0.5) and only affects sculpt snapping + the reference grid.
 - Camera: `viewport.mode` is 'orbit' (target/dist pivot) or 'fly' (free position +
   mouselook), toggled with P. The y=0 reference grid centers on the view ray.
-  View: V toggles `editor.viewMode` 'sculpted'/'voxels'; `editor.displaySurface`/
-  `displayMap` hold what's on screen (raw voxels in voxel view, displaced corners
-  tinted orange) and all previews/overlays must use them; face keys are stable
-  across views so picking/tools work in both.
-- Vertex handles are exactly visibility-filtered: front-facing adjacent face +
-  voxel-DDA line of sight (`segmentBlocked`, stops just short of the endpoint;
-  two probe distances along the corner normal so concave junctions aren't hidden
-  by grazing rays). Sculpt brushes: H smooth, U/J inflate/deflate, N noise, O reset.
+  Two independent view toggles: V = `editor.geomView` 'sculpted'/'voxels'
+  (geometry), T = `editor.texView` 'textured'/'untextured' (untextured paints
+  displacement magnitude into vertex colors; textured will show painted tiles
+  once painting lands). `editor.displaySurface`/`displayMap` hold what's on
+  screen and all previews/overlays must use them; face keys are stable across
+  views so picking/tools work everywhere.
+- Corner handles are visibility-filtered: front-facing adjacent face + voxel-DDA
+  line of sight (`segmentBlocked`, two probe distances along the corner normal).
+  KNOWN imperfect; per Peter, do NOT invest further here — exact depth-buffer
+  visibility arrives with the planned Rust+WASM+wgpu performance rework.
 
 ## Verification
 
 The end-to-end playwright suite is `scripts/verify.mjs` (seed/rect-extrude/carve/
 overhang/offset extrapolation/clamp/visibility/click-select/constraints/path
-select/handoff/brushes/views/cameras/undo/save-load). Run it with the dev server
-up: `node scripts/verify.mjs` (from the repo root so `playwright` resolves). It
-drives the real UI and asserts via `window.editor`; screenshots land in
-`/tmp/boxexplore-shots`. Always verify interactively, not just tsc.
+select/handoff/spatial brushes incl. topology growth/views/cameras/undo/
+save-load). Run it with the dev server up: `node scripts/verify.mjs` (from the
+repo root so `playwright` resolves). It drives the real UI and asserts via
+`window.editor`; screenshots land in `/tmp/boxexplore-shots`. Always verify
+interactively, not just tsc.

@@ -11,11 +11,11 @@
         <span id="logo">boxexplore</span>
         <span class="tb-group" id="mode-buttons">
           <button data-mode="build" title="Build mode — rect-select faces, extrude/carve (1)">Build</button>
-          <button data-mode="vertex" title="Vertex mode — sculpt corners (2)">Vertex</button>
+          <button data-mode="sculpt" title="Sculpt mode — corners and brushes (2)">Sculpt</button>
         </span>
         <span class="tb-group">
           <label>Grid
-            <select id="grid-step" title="Vertex snap step ([ and ] cycle)">
+            <select id="grid-step" title="Sculpt snap step ([ and ] cycle)">
               <option value="1">1</option>
               <option value="0.5">1/2</option>
               <option value="0.25">1/4</option>
@@ -25,7 +25,8 @@
         </span>
         <span class="tb-group">
           <button id="btn-camera" title="Toggle camera: orbit around a pivot / free fly (P)">Orbit</button>
-          <button id="btn-view" title="Toggle view: sculpted / raw-voxel debug with displaced corners highlighted (V)">Sculpted</button>
+          <button id="btn-geom" title="Toggle geometry view: sculpted surface / raw voxels (V)">Sculpted</button>
+          <button id="btn-tex" title="Toggle texture view: untextured shows displacement as vertex color (T)">Textured</button>
         </span>
         <span class="tb-group">
           <button id="btn-seed" title="Add a single voxel near the origin (for when the scene is empty)">+ Voxel</button>
@@ -53,6 +54,23 @@
             </div>
             <div class="hint">Drag on the tileset to pick a multi-tile stamp.</div>
           </div>
+          <div class="panel" id="sculpt-panel" hidden>
+            <div class="panel-title">Sculpt</div>
+            <div class="row" id="tool-buttons">
+              <button data-tool="select" class="active" title="Select/move corners (M)">Select</button>
+              <button data-tool="smooth" title="Smooth brush — rounds edges, fills crevices (B)">Smooth</button>
+              <button data-tool="draw" title="Draw brush — push surface out, Alt pulls in (F)">Draw</button>
+            </div>
+            <label class="row">Radius
+              <input type="range" id="brush-radius" min="0.5" max="8" step="0.1" value="2.5" />
+              <span class="value" id="brush-radius-val">2.5</span>
+            </label>
+            <label class="row">Strength
+              <input type="range" id="brush-strength" min="0.05" max="1" step="0.05" value="0.5" />
+              <span class="value" id="brush-strength-val">0.50</span>
+            </label>
+            <label class="row"><input type="checkbox" id="brush-topo" /> Brushes may add/remove voxels</label>
+          </div>
           <div class="panel">
             <div class="panel-title">Mode</div>
             <div id="status"></div>
@@ -72,11 +90,11 @@
         <div class="help-cols">
           <table>
             <tr><th colspan="2">General</th></tr>
-            <tr><td>1 / 2</td><td>Build / Vertex mode</td></tr>
+            <tr><td>1 / 2</td><td>Build / Sculpt mode</td></tr>
             <tr><td>Tab</td><td>Toggle mode</td></tr>
             <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
             <tr><td>Ctrl+S / Ctrl+O</td><td>Save / Open scene</td></tr>
-            <tr><td>[ / ]</td><td>Cycle vertex snap step</td></tr>
+            <tr><td>[ / ]</td><td>Cycle sculpt snap step</td></tr>
             <tr><td>?</td><td>Toggle this help</td></tr>
             <tr><th colspan="2">Camera &amp; view</th></tr>
             <tr><td>P</td><td>Toggle camera: orbit (pivot) / fly (free look)</td></tr>
@@ -85,7 +103,8 @@
             <tr><td>Wheel</td><td>Zoom — or dolly in fly mode</td></tr>
             <tr><td>W A S D</td><td>Move (E/Space up, Q down, Shift fast)</td></tr>
             <tr><td>C</td><td>Center camera on selection / volume</td></tr>
-            <tr><td>V</td><td>Toggle voxel debug view (offsets ignored, displaced corners orange)</td></tr>
+            <tr><td>V</td><td>Toggle geometry view: sculpted surface / raw voxels</td></tr>
+            <tr><td>T</td><td>Toggle texture view: untextured shows displacement as vertex color</td></tr>
           </table>
           <table>
             <tr><th colspan="2">Build mode</th></tr>
@@ -94,18 +113,23 @@
             <tr><td>=</td><td>Extrude the faces present in the rect one layer outward</td></tr>
             <tr><td>− / Delete</td><td>Carve one layer of the rect's footprint (keeps marching through air)</td></tr>
             <tr><td>Esc</td><td>Clear selection</td></tr>
-            <tr><td>Tab</td><td>Switch to vertex mode — a rect selection carries its corners over</td></tr>
+            <tr><td>Tab</td><td>Switch to sculpt mode — a rect selection carries its corners over</td></tr>
             <tr><td>+ Voxel (toolbar)</td><td>Seed a cell near the origin when the scene is empty</td></tr>
-            <tr><th colspan="2">Vertex mode</th></tr>
+            <tr><th colspan="2">Sculpt mode — tools</th></tr>
+            <tr><td>M / B / F</td><td>Select tool / Smooth brush / Draw brush</td></tr>
+            <tr><td>Brush drag</td><td>Paint over the radius (sidebar sliders set radius &amp; strength)</td></tr>
+            <tr><td>Alt + Draw brush</td><td>Pull the surface in instead of out</td></tr>
+            <tr><td colspan="2" class="hint">With "may add/remove voxels" on, brushes reshape the voxels themselves.</td></tr>
+            <tr><th colspan="2">Sculpt mode — Select tool</th></tr>
             <tr><td>Click</td><td>Select a corner (only visible corners show)</td></tr>
             <tr><td>Click a selected corner</td><td>Drag to move it (Alt = no snap)</td></tr>
             <tr><td>Drag</td><td>Box select (Shift = add to selection)</td></tr>
             <tr><td>Ctrl/Cmd+click</td><td>Select the shortest edge path from the last-picked corner</td></tr>
             <tr><td>X / Y / Z</td><td>Constrain movement to an axis (Shift = plane ⊥ axis; same key clears)</td></tr>
             <tr><td>= / −</td><td>Nudge selection along the constrained axis, toward / away from camera</td></tr>
-            <tr><td>H</td><td>Smooth brush — relax selected corners toward neighbors</td></tr>
+            <tr><td>H</td><td>Smooth selected corners toward their neighbors</td></tr>
             <tr><td>U / J</td><td>Inflate / deflate selected corners along their normal</td></tr>
-            <tr><td>N</td><td>Noise brush — organic jitter</td></tr>
+            <tr><td>N</td><td>Noise — organic jitter on selection</td></tr>
             <tr><td>O</td><td>Reset selected corner offsets</td></tr>
             <tr><td colspan="2" class="hint">All corner offsets are hard-clamped to ±½ cell on every axis.</td></tr>
           </table>

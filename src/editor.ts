@@ -6,8 +6,8 @@ import { type Quad, buildOutlineGeometry, buildQuadGeometry, VolMesh } from './m
 import { Doc, type EditOp, History, opIsEmpty } from './model';
 import { Palette, type Stamp } from './palette';
 import { Tileset } from './tileset';
+import { SculptMode, type SculptTool } from './sculpt';
 import { type Vec3, add, dot, mul, norm, sub } from './vec';
-import { VertexMode } from './vertex';
 import { Viewport } from './viewport';
 import { type VolFace, boundaryStats, buildSurface, parseCell } from './volume';
 
@@ -16,7 +16,7 @@ const GRID_STEPS = [1, 0.5, 0.25, 0.125];
 
 const EMPTY_SHIFTS = new Map<string, Vec3>();
 
-type ModeName = 'build' | 'vertex';
+type ModeName = 'build' | 'sculpt';
 
 interface Mode {
   readonly name: ModeName;
@@ -33,8 +33,8 @@ interface Mode {
 const MODE_HINTS: Record<ModeName, string> = {
   build: `<b>Click a face</b> or <b>drag a rect</b> on its plane (overhang ok) to select, then <b>=</b> extrude present faces · <b>−</b> carve the footprint<br>
 <b>Esc</b> clear · <b>+ Voxel</b> (toolbar) seeds a cell when the scene is empty`,
-  vertex: `<b>Click</b> select · <b>click again</b> drag (<b>Alt</b> no snap) · <b>drag</b> box select (<b>Shift</b> add) · <b>Ctrl/Cmd+click</b> shortest-path select<br>
-<b>X/Y/Z</b> axis constraint (<b>Shift</b> = plane) · <b>=/−</b> nudge along axis · brushes: <b>H</b> smooth · <b>U/J</b> inflate/deflate · <b>N</b> noise · <b>O</b> reset`,
+  sculpt: `Tools (left panel): <b>M</b> select · <b>B</b> smooth brush · <b>F</b> draw brush (<b>Alt</b> inverts) — brushes paint over a radius<br>
+Select: <b>click</b> · <b>click again</b> drags · <b>drag</b> box (<b>Shift</b> add) · <b>Ctrl/Cmd+click</b> path · <b>X/Y/Z</b> constrain (<b>Shift</b> plane) · <b>=/−</b> nudge · <b>H/U/J/N/O</b> on selection`,
 };
 
 export class Editor {
@@ -57,10 +57,15 @@ export class Editor {
   selectedVerts = new Set<string>();
   /** Build mode's active rectangle selection. */
   boxSel: BoxSel | null = null;
-  viewMode: 'sculpted' | 'voxels' = 'sculpted';
+  /** Geometry view: displaced surface, or the raw voxels underneath. */
+  geomView: 'sculpted' | 'voxels' = 'sculpted';
+  /** Texture view: untextured shows displacement magnitude as vertex color. */
+  texView: 'textured' | 'untextured' = 'textured';
+  /** Spatial brush settings (sculpt mode's Smooth/Draw tools). */
+  brush = { radius: 2.5, strength: 0.5, topo: false };
 
-  /** Grid snap step is per-mode: vertex work defaults finer than cell layout. */
-  private gridStepByMode: Record<ModeName, number> = { build: 1, vertex: 0.5 };
+  /** Grid snap step is per-mode: sculpt work defaults finer than cell layout. */
+  private gridStepByMode: Record<ModeName, number> = { build: 1, sculpt: 0.5 };
 
   get gridStep(): number {
     return this.gridStepByMode[this.mode?.name ?? 'build'] ?? 1;
@@ -80,6 +85,7 @@ export class Editor {
   private volOutline: THREE.LineSegments;
   private vertPoints: THREE.Points;
   private constraintLines: THREE.LineSegments;
+  private brushRing: THREE.LineLoop;
   private lastGridKey = '';
   private lastVolVersion = -1;
   private lastCamKey = '';
@@ -95,7 +101,14 @@ export class Editor {
     fileTileset: document.getElementById('file-tileset') as HTMLInputElement,
     fileScene: document.getElementById('file-scene') as HTMLInputElement,
     camera: document.getElementById('btn-camera') as HTMLButtonElement,
-    view: document.getElementById('btn-view') as HTMLButtonElement,
+    geom: document.getElementById('btn-geom') as HTMLButtonElement,
+    tex: document.getElementById('btn-tex') as HTMLButtonElement,
+    sculptPanel: document.getElementById('sculpt-panel') as HTMLDivElement,
+    brushRadius: document.getElementById('brush-radius') as HTMLInputElement,
+    brushRadiusVal: document.getElementById('brush-radius-val') as HTMLSpanElement,
+    brushStrength: document.getElementById('brush-strength') as HTMLInputElement,
+    brushStrengthVal: document.getElementById('brush-strength-val') as HTMLSpanElement,
+    brushTopo: document.getElementById('brush-topo') as HTMLInputElement,
   };
 
   constructor() {
@@ -174,7 +187,7 @@ export class Editor {
     this.vertPoints.renderOrder = 8;
     this.viewport.scene.add(this.vertPoints);
 
-    // blender-style axis/plane constraint widget (vertex mode)
+    // blender-style axis/plane constraint widget (sculpt mode)
     this.constraintLines = new THREE.LineSegments(
       new THREE.BufferGeometry(),
       new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 }),
@@ -184,6 +197,23 @@ export class Editor {
     this.constraintLines.renderOrder = 9;
     this.viewport.scene.add(this.constraintLines);
 
+    // brush cursor: a unit ring oriented to the surface, scaled to the radius
+    const ringGeo = new THREE.BufferGeometry();
+    const ringPts: number[] = [];
+    for (let i = 0; i < 48; i++) {
+      const a = (i / 48) * Math.PI * 2;
+      ringPts.push(Math.cos(a), Math.sin(a), 0);
+    }
+    ringGeo.setAttribute('position', new THREE.Float32BufferAttribute(ringPts, 3));
+    this.brushRing = new THREE.LineLoop(
+      ringGeo,
+      new THREE.LineBasicMaterial({ color: 0xffe08a, transparent: true, opacity: 0.85, depthTest: false }),
+    );
+    this.brushRing.visible = false;
+    this.brushRing.frustumCulled = false;
+    this.brushRing.renderOrder = 10;
+    this.viewport.scene.add(this.brushRing);
+
     // palette (tileset preview — texturing the volume comes later)
     this.palette = new Palette(document.getElementById('palette') as HTMLCanvasElement, this.tileset);
     this.palette.onSelect = (s) => {
@@ -192,7 +222,7 @@ export class Editor {
 
     this.modes = {
       build: new BuildMode(this),
-      vertex: new VertexMode(this),
+      sculpt: new SculptMode(this),
     };
     this.mode = this.modes.build;
 
@@ -234,27 +264,31 @@ export class Editor {
     this.renderSurface();
   }
 
-  /** (Re)build the displayed surface for the current view mode. */
+  /** (Re)build the displayed surface for the current view toggles. */
   private renderSurface(): void {
-    if (this.viewMode === 'voxels') {
-      // debug view: raw voxels (offsets ignored), displaced corners tinted
-      this.displaySurface = buildSurface(this.doc.cells, EMPTY_SHIFTS);
-      this.volMesh.rebuild(this.displaySurface, this.doc.shifts);
-    } else {
-      this.displaySurface = this.surface;
-      this.volMesh.rebuild(this.displaySurface);
-    }
+    this.displaySurface =
+      this.geomView === 'voxels' ? buildSurface(this.doc.cells, EMPTY_SHIFTS) : this.surface;
+    // untextured view paints displacement magnitude into the vertex colors
+    // (later, "textured" will show the painted tiles instead)
+    const tint = this.texView === 'untextured' ? this.doc.shifts : undefined;
+    this.volMesh.rebuild(this.displaySurface, tint);
     this.displayMap.clear();
     for (const f of this.displaySurface) this.displayMap.set(f.key, f);
     buildOutlineGeometry(this.displaySurface, this.volOutline.geometry as THREE.BufferGeometry);
     this.volOutline.visible = this.displaySurface.length > 0;
   }
 
-  toggleViewMode(): void {
-    this.viewMode = this.viewMode === 'sculpted' ? 'voxels' : 'sculpted';
-    this.el.view.textContent = this.viewMode === 'sculpted' ? 'Sculpted' : 'Voxels';
+  toggleGeomView(): void {
+    this.geomView = this.geomView === 'sculpted' ? 'voxels' : 'sculpted';
+    this.el.geom.textContent = this.geomView === 'sculpted' ? 'Sculpted' : 'Voxels';
     this.renderSurface();
     this.refreshOverlays();
+  }
+
+  toggleTexView(): void {
+    this.texView = this.texView === 'textured' ? 'untextured' : 'textured';
+    this.el.tex.textContent = this.texView === 'textured' ? 'Textured' : 'Untextured';
+    this.renderSurface();
   }
 
   toggleCameraMode(): void {
@@ -325,8 +359,8 @@ export class Editor {
 
     this.refreshConstraintWidget();
 
-    if (this.mode.name === 'vertex') {
-      const handles = (this.modes.vertex as VertexMode).visibleHandles();
+    if (this.mode.name === 'sculpt') {
+      const handles = (this.modes.sculpt as SculptMode).visibleHandles();
       const positions = new Float32Array(handles.length * 3);
       const colors = new Float32Array(handles.length * 3);
       handles.forEach((h, i) => {
@@ -353,10 +387,33 @@ export class Editor {
     }
   }
 
-  /** Axis lines through the vertex selection while an x/y/z constraint is active. */
+  /** Position/orient the brush cursor ring, or hide it (point = null). */
+  setBrushCursor(point: Vec3 | null, normal?: Vec3, radius = 1): void {
+    if (!point || !normal) {
+      this.brushRing.visible = false;
+      return;
+    }
+    this.brushRing.position.set(point.x, point.y, point.z);
+    this.brushRing.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(normal.x, normal.y, normal.z),
+    );
+    this.brushRing.scale.setScalar(radius);
+    this.brushRing.visible = true;
+  }
+
+  /** Sync the sculpt-tool buttons with the active tool. */
+  updateToolButtons(): void {
+    const tool = (this.modes.sculpt as SculptMode).tool;
+    document.querySelectorAll<HTMLButtonElement>('#tool-buttons button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.tool === tool);
+    });
+  }
+
+  /** Axis lines through the sculpt selection while an x/y/z constraint is active. */
   private refreshConstraintWidget(): void {
-    const vm = this.modes.vertex as VertexMode;
-    const c = this.mode.name === 'vertex' ? vm.constraint : null;
+    const vm = this.modes.sculpt as SculptMode;
+    const c = this.mode.name === 'sculpt' ? vm.constraint : null;
     const centroid = c ? vm.selectionCentroid() : null;
     if (!c || !centroid) {
       this.constraintLines.visible = false;
@@ -419,9 +476,9 @@ export class Editor {
   // -- modes ---------------------------------------------------------------------
 
   setMode(name: ModeName): void {
-    // hand a build-mode rect selection over to vertex mode as its corners
+    // hand a build-mode rect selection over to sculpt mode as its corners
     let handoff: string[] | null = null;
-    if (this.mode.name === 'build' && name === 'vertex' && this.boxSel) {
+    if (this.mode.name === 'build' && name === 'sculpt' && this.boxSel) {
       handoff = (this.modes.build as BuildMode).selectionLatticeKeys();
     }
     this.mode.exit();
@@ -431,6 +488,7 @@ export class Editor {
       this.selectedVerts.clear();
       for (const lk of handoff) this.selectedVerts.add(`L:${lk}`);
     }
+    this.el.sculptPanel.hidden = name !== 'sculpt';
     document.querySelectorAll<HTMLButtonElement>('#mode-buttons button').forEach((b) => {
       b.classList.toggle('active', b.dataset.mode === name);
     });
@@ -558,11 +616,11 @@ export class Editor {
           this.setMode('build');
           return;
         case '2':
-          this.setMode('vertex');
+          this.setMode('sculpt');
           return;
         case 'tab': {
           e.preventDefault();
-          this.setMode(this.mode.name === 'build' ? 'vertex' : 'build');
+          this.setMode(this.mode.name === 'build' ? 'sculpt' : 'build');
           return;
         }
         case '[':
@@ -582,7 +640,10 @@ export class Editor {
           this.toggleCameraMode();
           return;
         case 'v':
-          this.toggleViewMode();
+          this.toggleGeomView();
+          return;
+        case 't':
+          this.toggleTexView();
           return;
         default:
           if (this.mode.key(e)) e.preventDefault();
@@ -631,9 +692,26 @@ export class Editor {
       this.forceGridRebuild();
     });
     this.el.camera.addEventListener('click', () => this.toggleCameraMode());
-    this.el.view.addEventListener('click', () => this.toggleViewMode());
+    this.el.geom.addEventListener('click', () => this.toggleGeomView());
+    this.el.tex.addEventListener('click', () => this.toggleTexView());
     document.getElementById('btn-seed')!.addEventListener('click', () => {
       (this.modes.build as BuildMode).seedVoxel();
+    });
+    document.querySelectorAll<HTMLButtonElement>('#tool-buttons button').forEach((b) => {
+      b.addEventListener('click', () => {
+        (this.modes.sculpt as SculptMode).setTool(b.dataset.tool as SculptTool);
+      });
+    });
+    this.el.brushRadius.addEventListener('input', () => {
+      this.brush.radius = parseFloat(this.el.brushRadius.value);
+      this.el.brushRadiusVal.textContent = this.brush.radius.toFixed(1);
+    });
+    this.el.brushStrength.addEventListener('input', () => {
+      this.brush.strength = parseFloat(this.el.brushStrength.value);
+      this.el.brushStrengthVal.textContent = this.brush.strength.toFixed(2);
+    });
+    this.el.brushTopo.addEventListener('change', () => {
+      this.brush.topo = this.el.brushTopo.checked;
     });
     document.getElementById('btn-undo')!.addEventListener('click', () => this.undo());
     document.getElementById('btn-redo')!.addEventListener('click', () => this.redo());
@@ -712,8 +790,8 @@ export class Editor {
       this.viewport.rebuildGrid(frame, ca, cb, 16, this.gridStep);
     }
 
-    // vertex handles are occlusion-filtered, so refresh them as the camera moves
-    if (this.mode.name === 'vertex') {
+    // corner handles are occlusion-filtered, so refresh them as the camera moves
+    if (this.mode.name === 'sculpt') {
       const camKey = `${eye.x.toFixed(2)},${eye.y.toFixed(2)},${eye.z.toFixed(2)},${this.viewport.yaw.toFixed(3)},${this.viewport.pitch.toFixed(3)}`;
       if (camKey !== this.lastCamKey) {
         this.lastCamKey = camKey;
@@ -724,7 +802,7 @@ export class Editor {
     const parts = [
       this.mode.name,
       `cam ${this.viewport.mode}`,
-      `view ${this.viewMode}`,
+      `view ${this.geomView}/${this.texView}`,
       `grid ${this.gridStep}`,
       `${this.doc.cells.size} cells`,
     ];

@@ -1,7 +1,7 @@
 import type { Editor } from './editor';
 import { type ShiftChange } from './model';
 import { type Vec3, add, cross, dot, len, mul, norm, snap, sub, v3 } from './vec';
-import { type VolFace, DIRS, parseCell, segmentBlocked } from './volume';
+import { type VolFace, DIRS, cellKey, parseCell, segmentBlocked } from './volume';
 
 export interface VertexHandle {
   pos: Vec3;
@@ -15,6 +15,8 @@ export interface Constraint {
   axis: 0 | 1 | 2;
   plane: boolean;
 }
+
+export type SculptTool = 'select' | 'smooth' | 'draw';
 
 type Drag =
   | {
@@ -33,40 +35,61 @@ type Drag =
       moved: boolean;
     };
 
+interface Stroke {
+  invert: boolean;
+  /** First-touch snapshots of every offset the stroke has written. */
+  shiftsBefore: Map<string, Vec3 | null>;
+  cellsAdded: Set<string>;
+  cellsRemoved: Set<string>;
+}
+
 const AXIS_UNITS: readonly Vec3[] = [v3(1, 0, 0), v3(0, 1, 0), v3(0, 0, 1)];
 
 const faceNormal = (verts: readonly Vec3[]): Vec3 =>
   norm(cross(sub(verts[2], verts[0]), sub(verts[3], verts[1])));
 
 /**
- * Vertex mode: sculpt the surface by moving lattice corners (offsets are
- * hard-clamped to ±½ cell, and the surface stays sealed). Click selects; click
- * a *selected* corner again to drag it — drags from unselected corners or empty
- * space box-select (Shift = additive). X/Y/Z constrain movement to an axis
- * (Shift+X/Y/Z = the plane normal to it); with an axis set, `=`/`-` nudge the
- * selection along it toward/away from the camera. Ctrl/Cmd+click selects the
- * shortest edge path from the previously picked corner. Only corners the
- * camera can actually see are shown and pickable.
+ * Sculpt mode. The Select tool works on corners: click selects, click a
+ * selected corner again to drag it, other drags box-select, X/Y/Z constrain,
+ * Ctrl/Cmd+click path-selects. The Smooth and Draw brushes paint over a
+ * spatial radius instead: Smooth relaxes the *actual displaced surface* (so
+ * hard voxel edges round over even when offsets are zero), Draw pushes the
+ * surface out along its normal (Alt pulls in). When "brushes may add/remove
+ * voxels" is enabled, a brush pushing a corner past the ±½ clamp flips the
+ * voxel and rebases the offset onto the new ring (+0.55 out becomes −0.45 on
+ * the next cell), so the surface stays continuous and edits converge instead
+ * of oscillating.
  */
-export class VertexMode {
-  readonly name = 'vertex';
+export class SculptMode {
+  readonly name = 'sculpt';
+  tool: SculptTool = 'select';
   constraint: Constraint | null = null;
   private drag: Drag | null = null;
+  private stroke: Stroke | null = null;
   private lastPicked: string | null = null;
 
   constructor(private ed: Editor) {}
 
   enter(): void {
     this.constraint = null;
+    this.setTool('select');
     this.ed.refreshOverlays();
   }
 
   exit(): void {
     this.constraint = null;
     this.drag = null;
+    this.stroke = null;
     this.lastPicked = null;
     this.ed.hideSelBox();
+    this.ed.setBrushCursor(null);
     this.ed.refreshOverlays();
+  }
+
+  setTool(tool: SculptTool): void {
+    this.tool = tool;
+    this.ed.updateToolButtons();
+    if (tool === 'select') this.ed.setBrushCursor(null);
   }
 
   /** One handle per volume-surface lattice corner. */
@@ -112,9 +135,8 @@ export class VertexMode {
   /**
    * Handles the camera can actually see: at least one adjacent face turned
    * toward the camera, plus an unobstructed voxel line of sight to a probe
-   * just off the surface. Two probe distances along the corner normal keep
-   * concave corners (where the sight line grazes a surface) from being
-   * hidden over-eagerly.
+   * just off the surface. (Known to be imperfect — exact depth-buffer
+   * visibility is planned for the WASM/wgpu rework.)
    */
   visibleHandles(): VertexHandle[] {
     const ed = this.ed;
@@ -162,10 +184,176 @@ export class VertexMode {
     return mul(c, 1 / keys.length);
   }
 
+  // -- spatial brushes ---------------------------------------------------------------
+
+  /** Update the brush cursor ring at the surface under the pointer. */
+  private updateCursor(e: PointerEvent): void {
+    if (this.tool === 'select') return;
+    const pick = this.ed.pickVolFace(e);
+    if (pick) {
+      const vf = this.ed.displayMap.get(pick.vf.key) ?? pick.vf;
+      this.ed.setBrushCursor(pick.point, faceNormal(vf.verts), this.ed.brush.radius);
+    } else {
+      this.ed.setBrushCursor(null);
+    }
+  }
+
+  /** One brush application centered on a surface point. */
+  private dab(point: Vec3): void {
+    const ed = this.ed;
+    const st = this.stroke!;
+    const { radius, strength } = ed.brush;
+    const lf = this.latticeFaces();
+    const adj = this.tool === 'smooth' ? this.latticeNeighbors() : null;
+
+    // desired (unclamped) offsets for every corner in range
+    const desired = new Map<string, Vec3>();
+    for (const lk of ed.surfaceLattice) {
+      const pos = this.displaced(lk);
+      const dist = Math.hypot(pos.x - point.x, pos.y - point.y, pos.z - point.z);
+      if (dist > radius) continue;
+      const t = dist / radius;
+      const w = strength * (1 - t * t) ** 2;
+      let target: Vec3;
+      if (this.tool === 'smooth') {
+        const ns = adj!.get(lk);
+        if (!ns?.size) continue;
+        let avg = v3();
+        for (const n of ns) avg = add(avg, this.displaced(n));
+        avg = mul(avg, 1 / ns.size);
+        // relax toward the neighbor average of the *displaced* surface, so
+        // voxel edges round over even when all offsets start at zero
+        target = add(pos, mul(sub(avg, pos), Math.min(1, w * 0.7)));
+      } else {
+        const n = this.latticeNormal(lk, lf);
+        target = add(pos, mul(n, (st.invert ? -1 : 1) * w * 0.22));
+      }
+      const [x, y, z] = parseCell(lk);
+      desired.set(lk, sub(target, v3(x, y, z)));
+    }
+    if (!desired.size) return;
+
+    // topology: flip voxels where the surface wants to move past the ±½ clamp,
+    // rebasing offsets onto the new ring so the surface stays continuous
+    if (ed.brush.topo) {
+      const addCells = new Set<string>();
+      const removeCells = new Set<string>();
+      const rebases = new Map<string, Vec3>();
+      for (const [lk, off] of desired) {
+        for (const f of lf.get(lk) ?? []) {
+          const axis = f.dir >> 1;
+          const sign = f.dir % 2 === 0 ? 1 : -1;
+          const o = (axis === 0 ? off.x : axis === 1 ? off.y : off.z) * sign;
+          const n = DIRS[f.dir];
+          if (o > 0.55) {
+            const nk = cellKey(f.cell[0] + n[0], f.cell[1] + n[1], f.cell[2] + n[2]);
+            if (!ed.doc.cells.has(nk) && !addCells.has(nk)) {
+              addCells.add(nk);
+              for (const c of f.lattice) {
+                const want = desired.get(c);
+                if (!want) continue;
+                const [cx, cy, cz] = parseCell(c);
+                rebases.set(
+                  cellKey(cx + n[0], cy + n[1], cz + n[2]),
+                  sub(want, v3(n[0], n[1], n[2])),
+                );
+              }
+            }
+          } else if (o < -0.55) {
+            const ck = cellKey(f.cell[0], f.cell[1], f.cell[2]);
+            if (!removeCells.has(ck)) {
+              removeCells.add(ck);
+              for (const c of f.lattice) {
+                const want = desired.get(c);
+                if (!want) continue;
+                const [cx, cy, cz] = parseCell(c);
+                rebases.set(
+                  cellKey(cx - n[0], cy - n[1], cz - n[2]),
+                  add(want, v3(n[0], n[1], n[2])),
+                );
+              }
+            }
+          }
+        }
+      }
+      if (addCells.size || removeCells.size) {
+        for (const k of addCells) {
+          if (st.cellsRemoved.has(k)) st.cellsRemoved.delete(k);
+          else st.cellsAdded.add(k);
+        }
+        for (const k of removeCells) {
+          if (st.cellsAdded.has(k)) st.cellsAdded.delete(k);
+          else st.cellsRemoved.add(k);
+        }
+        ed.doc.writeCellsLive(addCells, removeCells); // rebuilds the surface
+        for (const [k, v] of rebases) desired.set(k, v);
+      }
+    }
+
+    const entries: Array<[string, Vec3 | null]> = [];
+    for (const [lk, off] of desired) {
+      if (!ed.surfaceLattice.has(lk)) continue; // flipped off the surface
+      if (!st.shiftsBefore.has(lk)) {
+        const cur = ed.doc.shifts.get(lk);
+        st.shiftsBefore.set(lk, cur ? { ...cur } : null);
+      }
+      entries.push([lk, off]); // the doc hard-clamps to ±0.5
+    }
+    if (entries.length) ed.doc.writeShiftsLive(entries);
+  }
+
+  private endStroke(): void {
+    const st = this.stroke;
+    this.stroke = null;
+    if (!st) return;
+    const ed = this.ed;
+    // clear any offsets stranded off the surface by topology flips
+    const cleanup: Array<[string, Vec3 | null]> = [];
+    for (const [k, v] of ed.doc.shifts) {
+      if (!ed.surfaceLattice.has(k)) {
+        if (!st.shiftsBefore.has(k)) st.shiftsBefore.set(k, { ...v });
+        cleanup.push([k, null]);
+      }
+    }
+    if (cleanup.length) ed.doc.writeShiftsLive(cleanup);
+    const shifts: ShiftChange[] = [];
+    for (const [k, before] of st.shiftsBefore) {
+      const now = ed.doc.shifts.get(k);
+      const after = now ? { ...now } : null;
+      const same =
+        (!before && !after) ||
+        (before &&
+          after &&
+          Math.abs(before.x - after.x) < 1e-9 &&
+          Math.abs(before.y - after.y) < 1e-9 &&
+          Math.abs(before.z - after.z) < 1e-9);
+      if (!same) shifts.push({ key: k, before, after });
+    }
+    ed.commitApplied({
+      cellsAdded: st.cellsAdded.size ? [...st.cellsAdded] : undefined,
+      cellsRemoved: st.cellsRemoved.size ? [...st.cellsRemoved] : undefined,
+      shifts: shifts.length ? shifts : undefined,
+    });
+    ed.refreshOverlays();
+  }
+
   // -- events -----------------------------------------------------------------
 
   pointerDown(e: PointerEvent): void {
     const ed = this.ed;
+    if (this.tool !== 'select') {
+      const pick = ed.pickVolFace(e);
+      if (!pick) return;
+      this.stroke = {
+        invert: e.altKey,
+        shiftsBefore: new Map(),
+        cellsAdded: new Set(),
+        cellsRemoved: new Set(),
+      };
+      this.dab(pick.point);
+      this.updateCursor(e);
+      return;
+    }
     const h = this.pickHandle(e);
     if (h && (e.ctrlKey || e.metaKey)) {
       this.pathSelect(h);
@@ -194,9 +382,17 @@ export class VertexMode {
   }
 
   pointerMove(e: PointerEvent): void {
+    const ed = this.ed;
+    if (this.tool !== 'select') {
+      if (this.stroke) {
+        const pick = ed.pickVolFace(e);
+        if (pick) this.dab(pick.point);
+      }
+      this.updateCursor(e);
+      return;
+    }
     const d = this.drag;
     if (!d) return;
-    const ed = this.ed;
     if (d.kind === 'box') {
       const p = ed.viewport.eventPoint(e);
       if (Math.abs(p.x - d.start.x) + Math.abs(p.y - d.start.y) > 4) d.moved = true;
@@ -241,6 +437,10 @@ export class VertexMode {
   }
 
   pointerUp(e: PointerEvent): void {
+    if (this.tool !== 'select') {
+      this.endStroke();
+      return;
+    }
     const d = this.drag;
     this.drag = null;
     const ed = this.ed;
@@ -374,8 +574,8 @@ export class VertexMode {
     this.ed.refreshOverlays();
   }
 
-  // -- brushes -------------------------------------------------------------------
-  // All brushes act on the selected corners; the doc clamps offsets to ±½ cell.
+  // -- selection brushes -----------------------------------------------------------
+  // These act on the selected corners; the doc clamps offsets to ±½ cell.
 
   private selectedLattice(): string[] {
     return [...this.ed.selectedVerts]
@@ -431,7 +631,7 @@ export class VertexMode {
     return adj;
   }
 
-  /** Pull each corner halfway toward the average of its neighbors (breaks edges). */
+  /** Pull each selected corner halfway toward the average of its neighbors. */
   private brushSmooth(): void {
     const adj = this.latticeNeighbors();
     this.applyBrush((lk) => {
@@ -446,7 +646,7 @@ export class VertexMode {
     });
   }
 
-  /** Nudge corners along their surface normal (out or in). */
+  /** Nudge selected corners along their surface normal (out or in). */
   private brushInflate(sign: number): void {
     const lf = this.latticeFaces();
     this.applyBrush((lk) => {
@@ -467,6 +667,15 @@ export class VertexMode {
   key(e: KeyboardEvent): boolean {
     const ed = this.ed;
     switch (e.key.toLowerCase()) {
+      case 'm':
+        this.setTool('select');
+        return true;
+      case 'b':
+        this.setTool('smooth');
+        return true;
+      case 'f':
+        this.setTool('draw');
+        return true;
       case 'x':
         this.setConstraint(0, e.shiftKey);
         return true;
@@ -516,8 +725,11 @@ export class VertexMode {
   }
 
   statusInfo(): string {
-    const n = this.ed.selectedVerts.size;
     const parts: string[] = [];
+    if (this.tool !== 'select') {
+      parts.push(`${this.tool} brush — drag to paint${this.tool === 'draw' ? ', Alt inverts' : ''}`);
+    }
+    const n = this.ed.selectedVerts.size;
     if (n) parts.push(`${n} corner${n === 1 ? '' : 's'} selected`);
     const c = this.constraint;
     if (c) parts.push(c.plane ? `plane ⊥ ${'xyz'[c.axis]}` : `axis ${'xyz'[c.axis]} — = / − nudge`);

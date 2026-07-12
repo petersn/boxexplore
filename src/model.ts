@@ -67,6 +67,14 @@ export class Doc {
     this.emit();
   }
 
+  /** Live-mutate cells during a brush stroke (no history). */
+  writeCellsLive(add: Iterable<string>, remove: Iterable<string>): void {
+    for (const k of remove) this.cells.delete(k);
+    for (const k of add) this.cells.add(k);
+    this.volVersion++;
+    this.emit();
+  }
+
   /** Apply (dir=1) or revert (dir=-1) an edit op, then notify. */
   applyOp(op: EditOp, dir: 1 | -1): void {
     if (dir === 1) {
