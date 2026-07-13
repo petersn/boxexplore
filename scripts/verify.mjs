@@ -676,8 +676,8 @@ const json = await page.evaluate(async () => {
 });
 const parsed = JSON.parse(json);
 check(
-  'save format is v3 with cells+shifts',
-  parsed.version === 3 && Array.isArray(parsed.doc.cells) && !('faces' in parsed.doc),
+  'save format is v5 with chunked cells',
+  parsed.version === 5 && Array.isArray(parsed.doc.full) && typeof parsed.doc.bits === 'object' && !('cells' in parsed.doc),
 );
 await page.evaluate(() => window.editor.world.clear());
 await page.evaluate(async (data) => {

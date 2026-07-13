@@ -11,15 +11,55 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
+/// v5 doc: cells are stored per 32³ CHUNK (fully-solid chunks as bare
+/// coordinates, partial chunks as a run-length-encoded bitmap), so document
+/// size scales with the surface, never the volume — a 2000×2000×500 slab
+/// serializes in milliseconds instead of OOMing on 2 billion cell strings.
 #[derive(Serialize, Deserialize, Default)]
 struct DocJson {
+    /// Fully solid chunks: "cx,cy,cz".
     #[serde(default)]
-    cells: Vec<String>,
+    full: Vec<String>,
+    /// Partial chunks: "cx,cy,cz" → "<run>x<hexword>,..." (512 u64 words).
+    #[serde(default)]
+    bits: BTreeMap<String, String>,
     #[serde(default)]
     shifts: BTreeMap<String, ShiftJson>,
     /// "x,y,z:d" -> [tx, ty, rot, flipH, flipV]
     #[serde(default)]
     paints: BTreeMap<String, [u32; 5]>,
+}
+
+fn rle_encode(words: &[u64]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        let mut run = 1;
+        while i + run < words.len() && words[i + run] == w {
+            run += 1;
+        }
+        if !out.is_empty() {
+            out.push(',');
+        }
+        out.push_str(&format!("{}x{:x}", run, w));
+        i += run;
+    }
+    out
+}
+
+fn rle_decode(s: &str, n: usize) -> Option<Vec<u64>> {
+    let mut out = Vec::with_capacity(n);
+    for seg in s.split(',') {
+        let (run, word) = seg.split_once('x')?;
+        let run: usize = run.parse().ok()?;
+        let word = u64::from_str_radix(word, 16).ok()?;
+        if run == 0 || out.len() + run > n {
+            return None;
+        }
+        out.extend(std::iter::repeat(word).take(run));
+    }
+    (out.len() == n).then_some(out)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -530,13 +570,21 @@ impl World {
 
     // -- io ------------------------------------------------------------------------
 
-    /// The doc as v4 JSON:
-    /// {"cells": [...], "shifts": {...}, "paints": {"x,y,z:d": [tx,ty,rot,fh,fv]}}.
+    /// The doc as v5 JSON:
+    /// {"full": [...], "bits": {...}, "shifts": {...}, "paints": {...}}.
     pub fn to_json(&self) -> String {
+        use crate::store::Chunk;
         let mut doc = DocJson::default();
-        self.store.for_each_cell(|c| {
-            doc.cells.push(format!("{},{},{}", c.0, c.1, c.2));
-        });
+        for (cp, chunk) in &self.store.chunks {
+            let key = format!("{},{},{}", cp.0, cp.1, cp.2);
+            match chunk {
+                Chunk::Full => doc.full.push(key),
+                Chunk::Bits(b) => {
+                    doc.bits.insert(key, rle_encode(&b[..]));
+                }
+            }
+        }
+        doc.full.sort();
         for (k, v) in &self.offsets.map {
             let l = unpack(*k);
             doc.shifts.insert(
@@ -565,10 +613,19 @@ impl World {
             Err(_) => return false,
         };
         self.clear();
-        for s in &doc.cells {
-            if let Some(c) = parse_triple(s) {
-                self.store.set(c, true);
+        for s in &doc.full {
+            if let Some(cp) = parse_triple(s) {
+                self.store.insert_chunk_raw(cp, crate::store::Chunk::Full);
             }
+        }
+        for (s, rle) in &doc.bits {
+            let (Some(cp), Some(words)) = (parse_triple(s), rle_decode(rle, crate::store::WORDS))
+            else {
+                continue;
+            };
+            let mut b = Box::new([0u64; crate::store::WORDS]);
+            b.copy_from_slice(&words);
+            self.store.insert_chunk_raw(cp, crate::store::Chunk::Bits(b));
         }
         for (k, v) in &doc.shifts {
             if let Some(l) = parse_triple(k) {

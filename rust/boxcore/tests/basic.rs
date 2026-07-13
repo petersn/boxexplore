@@ -620,3 +620,106 @@ fn camera_boom_ignores_grazing_side_walls() {
     let [boom, _] = phys.camera_boom([0.0, 2.9, 0.0], dir, 16.0);
     assert!((boom - 16.0).abs() < 1e-3, "parallel side wall ignored: {boom}");
 }
+
+#[test]
+fn v5_serialization_scales_with_surface_not_volume() {
+    use boxcore::wasm_api::World;
+    let mut w = World::new();
+    w.make_slab(320, 320, 96); // ~10M cells, mostly Full chunks
+    w.set_shift_raw(0, 0, 0, 0.25, -0.5, 0.0);
+    w.paint_stroke_begin();
+    assert!(w.paint_face(0, -1, 0, 2, 3, 4, 1, true, false));
+    w.paint_stroke_end();
+    let json = w.to_json();
+    assert!(
+        json.len() < 400_000,
+        "doc stays compact for a 10M-cell slab: {} bytes",
+        json.len()
+    );
+    let mut w2 = World::new();
+    assert!(w2.load_json(&json));
+    assert_eq!(w2.cell_count(), w.cell_count());
+    assert_eq!(w2.get_shift(0, 0, 0), vec![0.25, -0.5, 0.0]);
+    assert_eq!(w2.get_paint(0, -1, 0, 2), vec![3, 4, 1, 1, 0]);
+    // spot-check cells across chunk types (interior Full, boundary bitmap)
+    assert!(w2.get_cell(0, -50, 0) && w2.get_cell(-160, -1, 159) && !w2.get_cell(160, -1, 0));
+    let (_, odd) = boundary_stats_of(&w2);
+    assert_eq!(odd, 0, "watertight after roundtrip");
+}
+
+fn boundary_stats_of(w: &boxcore::wasm_api::World) -> (usize, usize) {
+    // stats() returns [faces, odd_edges] as f64
+    let s = w.stats();
+    (s[0] as usize, s[1] as usize)
+}
+
+/// The undersized-hole trap Peter found: an elevated hole 3.0 tall (the
+/// player is 3.5) in a wall that leans toward the player, with the lintel
+/// drooping toward the entrance. The old depenetration ratcheted the
+/// capsule INTO the pinch (the deepest contact's push points inward) and
+/// then cancelled every escape input. However the capsule ends up in a
+/// pocket, holding "away" must walk it back out.
+#[test]
+fn player_escapes_undersized_slanted_hole() {
+    use boxcore::physics::Player;
+    let mut store = ChunkStore::new();
+    let mut offsets = Offsets::default();
+    store.fill_box((-10, -1, -10), (20, 0, 10), true); // floor
+    store.fill_box((6, 0, -6), (9, 6, 6), true); // wall
+    store.fill_box((6, 1, -1), (9, 4, 1), false); // hole: 3 tall, sill y=1
+    for z in -1..=1 {
+        offsets.set((6, 4, z), Some([0.0, -0.4, 0.0])); // lintel droops outward
+    }
+    for z in -6..=6 {
+        offsets.set((6, 6, z), Some([-0.4, 0.0, 0.0])); // wall leans at player
+    }
+    let phys = phys_for(&store, &offsets);
+
+    // scripted entry: charge the hole with a well-timed jump, then back out
+    for jump_tick in [6, 10, 14, 18] {
+        let mut p = Player::new();
+        p.spawn_at(&phys, 2.0, 0.0);
+        for _ in 0..60 {
+            p.update(&phys, 1.0 / 60.0, [0.0, 0.0], false);
+        }
+        for i in 0..150 {
+            let jump = i >= jump_tick && i < jump_tick + 4;
+            p.update(&phys, 1.0 / 60.0, [1.0, 0.0], jump);
+        }
+        let mut escaped = false;
+        for _ in 0..300 {
+            p.update(&phys, 1.0 / 60.0, [-1.0, 0.0], false);
+            assert!(p.pos.iter().all(|v| v.is_finite()));
+            if p.pos[0] < 3.0 {
+                escaped = true;
+                break;
+            }
+        }
+        assert!(escaped, "backed out after jump@{jump_tick}: {:?}", p.pos);
+    }
+
+    // worst case: the capsule is already deep in the pocket. It must rest
+    // STABLY (no depenetration thrash) and walk out on demand.
+    let mut p = Player::new();
+    p.pos = [7.0, 1.01, 0.0];
+    p.vel = [0.0; 3];
+    let mut settled = [f32::NAN; 3];
+    for t in 0..60 {
+        p.update(&phys, 1.0 / 60.0, [0.0, 0.0], false);
+        if t == 20 {
+            settled = p.pos;
+        }
+    }
+    let drift = (0..3).map(|i| (p.pos[i] - settled[i]).abs()).fold(0.0f32, f32::max);
+    assert!(drift < 0.05, "rests stably in the pinch (drift {drift})");
+    let mut escaped = false;
+    for _ in 0..300 {
+        p.update(&phys, 1.0 / 60.0, [-1.0, 0.0], false);
+        assert!(p.pos.iter().all(|v| v.is_finite()));
+        if p.pos[0] < 4.0 {
+            escaped = true;
+            break;
+        }
+    }
+    assert!(escaped, "walked out of the pocket: {:?}", p.pos);
+}

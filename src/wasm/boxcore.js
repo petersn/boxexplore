@@ -561,8 +561,8 @@ export class World {
         return v1;
     }
     /**
-     * The doc as v4 JSON:
-     * {"cells": [...], "shifts": {...}, "paints": {"x,y,z:d": [tx,ty,rot,fh,fv]}}.
+     * The doc as v5 JSON:
+     * {"full": [...], "bits": {...}, "shifts": {...}, "paints": {...}}.
      * @returns {string}
      */
     to_json() {

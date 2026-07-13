@@ -325,30 +325,46 @@ impl Phys {
         let capsule = Capsule::new_y(half_height, radius);
         let reach_y = half_height + radius + 0.6;
         let reach_xz = radius + 0.6;
-        let mut c = center;
-        for _ in 0..4 {
+        // deepest contact at a candidate center: (penetration depth ≥ 0, normal)
+        let deepest = |c: V3| -> (f32, V3) {
             let lo = [c[0] - reach_xz, c[1] - reach_y, c[2] - reach_xz];
             let hi = [c[0] + reach_xz, c[1] + reach_y, c[2] + reach_xz];
             let pose = Pose::from_translation(vec(c));
-            let mut worst: Option<(f32, V3)> = None;
+            let mut worst = (0.0f32, [0.0f32; 3]);
             for h in self.handles_near(lo, hi) {
                 let co = &self.colliders[h];
                 if let Ok(Some(ct)) = contact(co.position(), co.shape(), &pose, &capsule, 0.0) {
-                    if ct.dist < -TOLERANCE && worst.is_none_or(|(d, _)| ct.dist < d) {
+                    if -ct.dist > worst.0 {
                         // normal1 points from the world geometry toward the capsule
-                        worst = Some((ct.dist, v3(ct.normal1)));
+                        worst = (-ct.dist, v3(ct.normal1));
                     }
                 }
             }
-            match worst {
-                None => return (c, true),
-                Some((dist, n)) => {
-                    let push = -dist + TOLERANCE;
-                    c = [c[0] + n[0] * push, c[1] + n[1] * push, c[2] + n[2] * push];
-                }
+            worst
+        };
+        let mut c = center;
+        let (mut depth, mut n) = deepest(c);
+        for _ in 0..4 {
+            if depth <= TOLERANCE {
+                return (c, true);
             }
+            let push = depth + TOLERANCE;
+            let c2 = [c[0] + n[0] * push, c[1] + n[1] * push, c[2] + n[2] * push];
+            let (d2, n2) = deepest(c2);
+            // Monotone descent only: in a squeeze (sill below, slanted
+            // lintel above) the deepest contact's push points INTO the
+            // pinch — accepting it would ratchet the capsule deeper every
+            // tick and cancel the player's escape input. A stable partial
+            // overlap is strictly better; the penetration-tolerant sweeps
+            // still move the player out along the surfaces.
+            if d2 >= depth {
+                return (c, false);
+            }
+            c = c2;
+            depth = d2;
+            n = n2;
         }
-        (c, false)
+        (c, depth <= TOLERANCE)
     }
 }
 
@@ -387,8 +403,10 @@ pub struct Player {
     jump_held: bool,
     /// Consecutive ticks spent effectively stationary without walkable
     /// ground (wedged in a crease, balanced on a ledge lip). Stability
-    /// implies support: a couple of these grant jumping, so "I'm not
-    /// falling but I can't jump" can't happen.
+    /// implies support: REST_BRACE of these grant jumping, so "I'm not
+    /// falling but I can't jump" can't happen. The threshold is ~1/6 s on
+    /// purpose: a transient wall-graze at jump apex must NOT grant a tech
+    /// jump (it read as a surprise wall-jump), only persistent stuck-ness.
     rest_ticks: u32,
     /// Normal of the unwalkable surface currently carrying us (slide or
     /// arrested fall). A jump from such a brace kicks off along it, so
@@ -484,10 +502,13 @@ impl Player {
                     let rest = len - allowed;
                     let rx = dir[0] * rest;
                     let rz = dir[2] * rest;
-                    if n[1] >= MAX_SLOPE_COS {
-                        // walkable surface, not a wall: deflect the remaining
-                        // motion along the slope plane in full 3D, riding up
-                        // the incline (ground snap trues up the height after)
+                    if n[1] >= MAX_SLOPE_COS || n[1] <= -0.2 {
+                        // not a wall: a walkable slope (ride up it) or an
+                        // overhead plane like a slanted lintel (slide DOWN
+                        // along it — the escape route out of a pinch is
+                        // down-and-out, and a horizontal-only slide would
+                        // read the ceiling as an unpassable wall). Deflect
+                        // the remaining motion along the plane in full 3D.
                         let dot = rx * n[0] + rz * n[2];
                         self.pos[0] += rx - n[0] * dot;
                         self.pos[1] += -n[1] * dot;
@@ -558,7 +579,8 @@ impl Player {
         let walkable = ground.is_some_and(|(_, n)| n[1] >= MAX_SLOPE_COS);
         let supported = walkable && feet_gap <= SNAP_DIST && self.vel[1] <= 0.01;
         // anything stable enough to stand on is stable enough to jump from
-        let braced = supported || self.sliding || self.rest_ticks >= 2;
+        const REST_BRACE: u32 = 10;
+        let braced = supported || self.sliding || self.rest_ticks >= REST_BRACE;
         self.sliding = false;
         self.on_ground = supported;
         self.coyote = if supported {
@@ -731,9 +753,10 @@ impl Player {
             self.vel = [0.0; 3];
         }
 
-        // facing follows horizontal motion
+        // facing follows horizontal motion (but not the involuntary tech
+        // kick — turning away from the wall read as a wall-jump move)
         let hv = (self.vel[0] * self.vel[0] + self.vel[2] * self.vel[2]).sqrt();
-        if hv > 0.5 {
+        if hv > 0.5 && self.tech_timer <= 0.0 {
             let want = self.vel[0].atan2(self.vel[2]);
             let mut d = want - self.facing;
             while d > core::f32::consts::PI {

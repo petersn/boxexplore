@@ -11,7 +11,7 @@ use crate::{pack, unpack, IV, V3};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 pub const S: i32 = 32; // chunk side
-const WORDS: usize = (32 * 32 * 32) / 64;
+pub const WORDS: usize = (32 * 32 * 32) / 64;
 
 pub enum Chunk {
     Full,
@@ -274,6 +274,33 @@ impl ChunkStore {
             }
         }
         out
+    }
+
+    /// Install a whole chunk (deserialization path): maintains the cell
+    /// census, normalizes uniform bitmaps, and dirties the neighborhood.
+    pub fn insert_chunk_raw(&mut self, cp: IV, chunk: Chunk) {
+        let count = match &chunk {
+            Chunk::Full => (S * S * S) as u64,
+            Chunk::Bits(b) => b.iter().map(|w| w.count_ones() as u64).sum(),
+        };
+        if count == 0 {
+            return;
+        }
+        let prev = match self.chunks.insert(cp, chunk) {
+            None => 0u64,
+            Some(Chunk::Full) => (S * S * S) as u64,
+            Some(Chunk::Bits(b)) => b.iter().map(|w| w.count_ones() as u64).sum(),
+        };
+        self.cell_count = self.cell_count + count - prev;
+        self.normalize(cp);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    self.dirty.insert((cp.0 + dx, cp.1 + dy, cp.2 + dz));
+                    self.dirty_phys.insert((cp.0 + dx, cp.1 + dy, cp.2 + dz));
+                }
+            }
+        }
     }
 
     pub fn clear(&mut self) {

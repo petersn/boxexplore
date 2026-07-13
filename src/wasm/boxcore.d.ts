@@ -114,8 +114,8 @@ export class World {
     surface_has_corner(x: number, y: number, z: number): boolean;
     take_dirty(): Int32Array;
     /**
-     * The doc as v4 JSON:
-     * {"cells": [...], "shifts": {...}, "paints": {"x,y,z:d": [tx,ty,rot,fh,fv]}}.
+     * The doc as v5 JSON:
+     * {"full": [...], "bits": {...}, "shifts": {...}, "paints": {...}}.
      */
     to_json(): string;
     undo(): boolean;

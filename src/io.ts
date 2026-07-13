@@ -2,16 +2,16 @@ import type { Editor } from './editor';
 
 export interface SaveData {
   app: 'boxexplore';
-  version: 3;
+  version: 5;
   tileSize: number;
   tileset: string; // data URL
-  doc: unknown; // { cells: string[], shifts: { "x,y,z": {x,y,z} } } — owned by the Rust core
+  doc: unknown; // { full, bits, shifts, paints } — chunked v5, owned by the Rust core
 }
 
 export function serializeScene(ed: Editor): string {
   const data: SaveData = {
     app: 'boxexplore',
-    version: 3,
+    version: 5,
     tileSize: ed.tileset.tileSize,
     tileset: ed.tileset.toDataURL(),
     doc: ed.world.docJson(),

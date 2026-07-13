@@ -87,7 +87,18 @@ and benchmark numbers.
   `Phys::depenetrate` (parry contact query, deepest-first) ejects residual
   overlap each tick, snaps are bounded (±step up, steep faces never lift),
   and `rescue_player_if_buried` (wasm_api) climbs to the nearest air
-  column if the voxel store says the body is deep inside solid. Ground
+  column if the voxel store says the body is deep inside solid.
+  Depenetration is MONOTONE (a push is only accepted if it reduces max
+  penetration): in a squeeze (undersized hole, sill + slanted lintel) the
+  deepest contact's push points INTO the pinch and would ratchet the
+  capsule in and cancel escape input — hold stable partial overlap instead
+  and let the penetration-tolerant sweeps walk out (tested:
+  player_escapes_undersized_slanted_hole). move_horizontal 3D-deflects
+  along overhead planes (n_y ≤ -0.2) too, so slanted lintels slide you
+  down-and-out instead of reading as walls. Braced/tech jumps need ~1/6 s
+  of provable rest (REST_BRACE) so transient wall grazes at jump apex
+  never grant surprise wall-jumps; facing is frozen during a tech kick.
+  Ground
   snapping is SWEPT (`snap_down`), never a ray teleport — teleport snaps
   re-penetrated slope planes and made the ramp base a limit cycle at fine
   dt (regression test: ramp_climb_is_timestep_independent). Walkable
