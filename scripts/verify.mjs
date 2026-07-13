@@ -487,6 +487,65 @@ await page.evaluate(async (data) => {
 check('paints survive save/load', (await paints()) === beforeRT, `${await paints()} paints`);
 await page.screenshot({ path: `${SHOTS}/57-painted.png` });
 
+// --- 12d. play mode: land, run, jump, climb a 45° ramp -------------------------------------
+await freshScene();
+await page.evaluate(() => {
+  const ed = window.editor, w = ed.world;
+  w.raw.fill_box_raw(-10, -1, -10, 20, 0, 10, true); // floor
+  for (let i = 0; i < 4; i++) w.raw.fill_box_raw(5 + i, 0, -2, 6 + i, 1 + i, 2, true);
+  for (let i = 0; i < 4; i++) {
+    for (let z = -2; z <= 2; z++) {
+      w.setShiftRaw(5 + i, 1 + i, z, [0, -0.5, 0]);
+      w.setShiftRaw(6 + i, 1 + i, z, [0, 0.5, 0]);
+    }
+  }
+  ed.renderer.rebuildAll(w);
+  w.raw.take_dirty();
+  ed.viewport.target.set(0, 0.5, 0);
+});
+await page.keyboard.press('g');
+check('G enters play mode', await page.evaluate(() => window.editor.playing === true));
+await page.waitForTimeout(800);
+const landed = await page.evaluate(() => ({
+  y: window.editor.play.pos.y,
+  g: window.editor.play.onGround,
+}));
+check('player falls and lands on the floor', Math.abs(landed.y) < 0.05 && landed.g, JSON.stringify(landed));
+
+await page.evaluate(() => { window.editor.viewport.yaw = Math.PI; }); // W = +x
+await page.keyboard.down('w');
+await page.waitForTimeout(600);
+await page.keyboard.up('w');
+const ran = await page.evaluate(() => window.editor.play.pos.x);
+check('WASD runs the player', ran > 2, `x=${ran.toFixed(1)}`);
+
+await page.keyboard.down(' ');
+await page.waitForTimeout(120);
+await page.keyboard.up(' ');
+await page.waitForTimeout(160);
+const jumpY = await page.evaluate(() => window.editor.play.pos.y);
+check('Space jumps', jumpY > 0.8, `y=${jumpY.toFixed(2)}`);
+await page.waitForTimeout(900);
+check(
+  'player lands after the jump',
+  await page.evaluate(() => window.editor.play.onGround && Math.abs(window.editor.play.pos.y) < 0.05),
+);
+
+await page.keyboard.down('w');
+await page.waitForTimeout(1800);
+await page.keyboard.up('w');
+const climbed = await page.evaluate(() => ({ x: window.editor.play.pos.x, y: window.editor.play.pos.y }));
+check('player climbs the 45° ramp', climbed.y > 3, JSON.stringify(climbed));
+await page.screenshot({ path: `${SHOTS}/61-play.png` });
+
+await page.keyboard.press('Escape');
+check(
+  'Esc exits play and restores the camera',
+  await page.evaluate(
+    () => window.editor.playing === false && window.editor.play === null && window.editor.viewport.mode === 'orbit',
+  ),
+);
+
 // --- 13. cameras (fly uses Q/E for down/up) ------------------------------------------------
 await page.keyboard.press('p');
 check('P switches to fly', (await page.evaluate(() => window.editor.viewport.mode)) === 'fly');

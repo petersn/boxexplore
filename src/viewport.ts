@@ -19,6 +19,8 @@ export class Viewport {
   readonly camera: THREE.PerspectiveCamera;
 
   mode: CameraMode = 'orbit';
+  /** Play mode drives the camera; suspend WASD flying. */
+  suspendFly = false;
   target = new THREE.Vector3(0, 0.5, 0);
   /** Camera position — ground truth in fly mode, derived in orbit mode. */
   position = new THREE.Vector3();
@@ -134,7 +136,7 @@ export class Viewport {
   }
 
   private fly(dt: number): void {
-    if (this.held.size === 0) return;
+    if (this.suspendFly || this.held.size === 0) return;
     const speed =
       this.mode === 'fly'
         ? (this.held.has('shift') ? 48 : 16) * dt

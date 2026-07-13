@@ -54,13 +54,21 @@ and benchmark numbers.
 
 ## UI conventions
 
-- Modes: 1 Build, 2 Sculpt, 3 Paint (paint: Q/E rotate, F/R flip, Alt
-  eyedrop, X/RMB erase; stamps pattern-lock to the face grid; entering paint
-  mode forces the Textured view). Sculpt tools M/B/F (select/smooth/draw
-  brush, Alt inverts draw; tool persists across mode switches). X/Y/Z blender
+- Modes: 1 Build, 2 Sculpt, 3 Paint, plus Play (G/Esc, `editor.playing`).
+  Paint: radius brush for single tiles, whole-block placement for multi-tile
+  stamps (grid-locked, Q/E/F/R orient, textured preview via `setStampGhost`),
+  random-scatter checkbox, sweep interpolation between pointer events
+  (`pickGroupAt`), X/Ctrl/RMB erase, Alt eyedrop; entering paint forces the
+  Textured view. Sculpt tools M/B/F (tool persists across mode switches);
+  the Draw brush pushes along a locked X/Y/Z axis (camera-nearer sign) when
+  a constraint is active (`stroke_begin` dir override). X/Y/Z blender
   constraints (Shift = plane), `=`/`-` nudges. Camera: P orbit/fly (fly-down
   Q, up E/Space — Z is reserved). Views: V sculpted/voxels, T
-  textured/untextured (textured shows paints).
+  textured/untextured. There is NO reference grid anymore.
+- Play mode (`src/play.ts`): third-person 0.9r×3.5h cylinder, raycast
+  collision against the rendered chunks (renderer.group), 50° max slope,
+  0.55 auto-step, chase camera = orbit camera with target locked to the
+  player. Editor suspends fly keys + overlays while playing.
 - Grid step is per-mode (`editor.gridStep` accessor; sculpt defaults 0.5).
 - Corner-handle visibility uses voxel DDA + facing test in the core. KNOWN
   imperfect; per Peter, don't polish — depth-buffer visibility arrives with

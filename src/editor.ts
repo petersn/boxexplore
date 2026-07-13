@@ -3,6 +3,7 @@ import { BuildMode } from './build';
 import { downloadText, loadScene, serializeScene } from './io';
 import { type Quad, buildOutlineGeometry, buildQuadGeometry, buildTexturedQuadGeometry } from './meshbuilder';
 import { PaintMode } from './paint';
+import { PlayController } from './play';
 import { Palette, type Stamp } from './palette';
 import { ChunkRenderer } from './render';
 import { SculptMode, type SculptTool } from './sculpt';
@@ -56,6 +57,16 @@ export class Editor {
   brush = { radius: 2.5, strength: 0.5, topo: false };
   /** Paint brush settings: radius (0 = single face) and random scatter. */
   paintBrush = { radius: 0, scatter: false };
+  /** Play mode: run around the world with a third-person character. */
+  playing = false;
+  play: PlayController | null = null;
+  private savedCamera: {
+    mode: 'orbit' | 'fly';
+    target: THREE.Vector3;
+    yaw: number;
+    pitch: number;
+    dist: number;
+  } | null = null;
 
   /** Grid snap step is per-mode: sculpt work defaults finer than cell layout. */
   private gridStepByMode: Record<ModeName, number> = { build: 1, sculpt: 0.5, paint: 1 };
@@ -96,6 +107,7 @@ export class Editor {
     fileTileset: document.getElementById('file-tileset') as HTMLInputElement,
     fileScene: document.getElementById('file-scene') as HTMLInputElement,
     camera: document.getElementById('btn-camera') as HTMLButtonElement,
+    play: document.getElementById('btn-play') as HTMLButtonElement,
     geom: document.getElementById('btn-geom') as HTMLButtonElement,
     tex: document.getElementById('btn-tex') as HTMLButtonElement,
     sculptPanel: document.getElementById('sculpt-panel') as HTMLDivElement,
@@ -283,6 +295,50 @@ export class Editor {
     this.el.camera.textContent = this.viewport.mode === 'orbit' ? 'Orbit' : 'Fly';
   }
 
+  togglePlay(): void {
+    if (this.playing) {
+      this.playing = false;
+      if (this.play) {
+        this.viewport.scene.remove(this.play.group);
+        this.play = null;
+      }
+      this.viewport.suspendFly = false;
+      const c = this.savedCamera;
+      if (c) {
+        this.viewport.setCameraMode(c.mode);
+        this.viewport.target.copy(c.target);
+        this.viewport.yaw = c.yaw;
+        this.viewport.pitch = c.pitch;
+        this.viewport.dist = c.dist;
+      }
+      this.el.play.classList.remove('active');
+      this.refreshOverlays();
+      return;
+    }
+    // enter play: drop the character where the camera is looking
+    this.savedCamera = {
+      mode: this.viewport.mode,
+      target: this.viewport.target.clone(),
+      yaw: this.viewport.yaw,
+      pitch: this.viewport.pitch,
+      dist: this.viewport.dist,
+    };
+    this.viewport.setCameraMode('orbit');
+    this.viewport.suspendFly = true;
+    this.playing = true;
+    this.play = new PlayController(this.renderer);
+    this.viewport.scene.add(this.play.group);
+    this.play.spawnAt(this.viewport.target.x, this.viewport.target.z);
+    this.viewport.dist = 12;
+    this.viewport.pitch = Math.max(0.25, this.viewport.pitch);
+    this.setGhost(null);
+    this.setStampGhost(null);
+    this.setBrushCursor(null);
+    this.hideSelBox();
+    this.el.play.classList.add('active');
+    this.refreshOverlays();
+  }
+
   /** Watertightness numbers for the derived surface (used by verify scripts). */
   surfaceStats(): { faces: number; oddEdges: number } {
     return this.world.stats();
@@ -336,6 +392,13 @@ export class Editor {
   }
 
   refreshOverlays(): void {
+    if (this.playing) {
+      this.selMesh.visible = false;
+      this.selOutline.visible = false;
+      this.vertPoints.visible = false;
+      this.constraintLines.visible = false;
+      return;
+    }
     const quads: Quad[] =
       this.mode.name === 'build' ? (this.modes.build as BuildMode).selectionFaces() : [];
     if (quads.length) {
@@ -543,6 +606,11 @@ export class Editor {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('pointerdown', (e) => {
       canvas.setPointerCapture(e.pointerId);
+      if (this.playing) {
+        // any button orbits the chase camera
+        this.viewport.beginCameraDrag('orbit', e);
+        return;
+      }
       if (e.button === 2) this.viewport.beginCameraDrag('orbit', e);
       else if (e.button === 1) {
         e.preventDefault();
@@ -578,6 +646,13 @@ export class Editor {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
       this.heldKeys.add(e.key.toLowerCase());
+
+      if (this.playing) {
+        const low = e.key.toLowerCase();
+        if (low === 'g' || low === 'escape') this.togglePlay();
+        if (low === ' ') e.preventDefault();
+        return;
+      }
 
       if (!this.el.help.hidden) {
         if (e.key === 'Escape' || e.key === '?') this.el.help.hidden = true;
@@ -631,8 +706,10 @@ export class Editor {
           this.cycleGridStep(-1);
           return;
         case ']':
-        case 'g':
           this.cycleGridStep(1);
+          return;
+        case 'g':
+          this.togglePlay();
           return;
         case '?':
           this.el.help.hidden = false;
@@ -685,6 +762,7 @@ export class Editor {
       this.gridStep = parseFloat(this.el.gridStep.value);
     });
     this.el.camera.addEventListener('click', () => this.toggleCameraMode());
+    this.el.play.addEventListener('click', () => this.togglePlay());
     this.el.geom.addEventListener('click', () => this.toggleGeomView());
     this.el.tex.addEventListener('click', () => this.toggleTexView());
     document.getElementById('btn-seed')!.addEventListener('click', () => {
@@ -799,12 +877,17 @@ export class Editor {
       }
     }
 
+    // play mode: step the character controller (drives the chase camera)
+    if (this.playing && this.play) {
+      this.play.update(dt, (k) => this.heldKeys.has(k), this.viewport);
+    }
+
     // distance-based LOD for far chunks
     this.renderer.updateLod(this.world, new THREE.Vector3(eye.x, eye.y, eye.z));
 
     const parts = [
       `${Math.round(this.fpsEma)} fps`,
-      this.mode.name,
+      this.playing ? 'PLAYING (G/Esc exits)' : this.mode.name,
       `cam ${this.viewport.mode}`,
       `view ${this.geomView}/${this.texView}`,
       `grid ${this.gridStep}`,

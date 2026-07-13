@@ -52,7 +52,8 @@ organic terrain without breaking the seal.
     **X/Y/Z** constrain movement to a world axis, `Shift+X/Y/Z` to the plane
     normal to it (an axis widget shows the constraint; the same key clears it) —
     and with an axis set, **`=`/`−`** nudge the selection along it toward/away
-    from the camera. Selection ops: `H` smooth, `U`/`J` inflate/deflate, `N`
+    from the camera (the Draw brush also pushes along a locked axis instead
+    of the surface normal — handy for raising terrain). Selection ops: `H` smooth, `U`/`J` inflate/deflate, `N`
     noise, `O` reset. Snap defaults to ½ steps.
   - **Smooth brush** (`B`): paint over a radius (sidebar sliders set radius and
     strength) to relax the *actual displaced surface* — hard voxel edges round
@@ -63,14 +64,23 @@ organic terrain without breaking the seal.
     rebases the offset onto the new ring, so strokes grow (or dig away) real
     geometry while the surface stays continuous and watertight.
 
-- **Paint mode (3)** — assign tileset tiles to faces. Click/drag paints the
-  palette stamp (multi-tile stamps lay a pattern locked to the face grid, so
-  dragging fills coherent brickwork); `Q`/`E` rotate the tile, `F`/`R` flip it,
-  `Alt+click` eyedrops, `X+drag` or right-click erases. Paints render in the
-  Textured view, modulated by the same AO/lambert shading, and **follow
-  geometry edits**: extruding a painted wall yields more painted wall, carving
-  into painted ground keeps the paint on the new floor, and buried faces are
-  cleaned up. Unpainted faces stay flat-shaded gray.
+- **Paint mode (3)** — assign tileset tiles to faces, with a live textured
+  preview of exactly what will land where. A single tile paints with a
+  **radius** brush (sidebar slider); a multi-tile stamp places the whole
+  block, grid-locked so neighboring placements tile seamlessly, with `Q`/`E`
+  rotation and `F`/`R` flips; the **random scatter** checkbox sprays random
+  tiles from the selection with random orientations instead. Strokes fill the
+  whole swept path (no gaps on fast drags), `Alt+click` eyedrops, `X+drag` or
+  right-click erases (radius-aware). Paints render in the Textured view,
+  shaded by the same AO/lambert, and **follow geometry edits**: extruding a
+  painted wall yields more painted wall, carving into painted ground keeps
+  the paint on the new floor, buried faces are cleaned up.
+
+- **Play mode (`G`)** — run around your world in third person: a capsule
+  character with gravity, jumping (Space), wall sliding, half-cell auto-step,
+  and slope climbing up to 50° (collision is against the rendered displaced
+  surface, so sculpted ramps walk exactly as they look). Drag/wheel orbit the
+  chase camera; `G`/`Esc` returns to editing.
 
 The camera has two modes (`P` toggles): **orbit** (CAD-style pivot) and **fly**
 (Minecraft-creative-style — WASD + mouselook, no pivot). Two independent view
@@ -114,7 +124,7 @@ game runtime will consume it directly.
 ## Roadmap
 
 - Scroll-wheel extrude on the active rect selection
-- Multi-face paint fill (bucket) and rotated multi-tile stamp layout
+- Paint bucket fill; first-person camera option in play mode
 - Select/move/copy volume regions; sub-unit cells for fine geometry
 - Prefab objects with live-updating instances
 - Game runtime: player controller, collision from the derived surface, room/chunk streaming
