@@ -674,8 +674,8 @@ impl World {
         }
     }
 
-    /// Stateless chase-camera boom (radius-parameterized clearance profile;
-    /// see `Phys::camera_boom`). Returns [boom, r*, dmin, dmax, rmin, rmax].
+    /// Stateless chase-camera boom (cone cast over sphere radii; see
+    /// `Phys::camera_boom` and docs/camera.md). Returns [boom, los].
     #[allow(clippy::too_many_arguments)]
     pub fn camera_boom(
         &mut self,
@@ -689,23 +689,6 @@ impl World {
     ) -> Vec<f32> {
         self.phys_sync();
         self.phys.camera_boom([fx, fy, fz], [dx, dy, dz], dist).to_vec()
-    }
-
-    /// How far the chase camera can pull back before hitting geometry.
-    #[allow(clippy::too_many_arguments)]
-    pub fn camera_clearance(
-        &mut self,
-        fx: f32,
-        fy: f32,
-        fz: f32,
-        dx: f32,
-        dy: f32,
-        dz: f32,
-        dist: f32,
-        radius: f32,
-    ) -> f32 {
-        self.phys_sync();
-        self.phys.clearance([fx, fy, fz], [dx, dy, dz], dist, radius)
     }
 
     /// Approximate document heap bytes (for the status/debug display).

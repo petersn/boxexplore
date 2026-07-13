@@ -208,33 +208,85 @@ impl Phys {
     /// with no snap — and settles AT that distance, since versus a surface
     /// parallel to the boom the credit K outweighs the clearance loss.
     ///
-    /// Returns [boom, r*, dmin, dmax, RMIN, RMAX, K] (extras feed the
-    /// in-game debug plot).
-    pub fn camera_boom(&self, focus: V3, dir: V3, max_dist: f32) -> [f32; 7] {
-        const RMIN: f32 = 0.4; // ≥ this ⇒ the camera sphere itself never clips
-        const RMAX: f32 = 2.5;
-        const SAMPLES: usize = 12;
-        // cone reaches RMAX at full boom length
-        let k = max_dist.max(4.0) / (RMAX - RMIN);
-        let dmax = self.clearance(focus, dir, max_dist, RMIN);
-        let mut dmin = dmax;
-        let mut boom = dmax;
-        let mut rstar = RMIN;
-        for i in 1..=SAMPLES {
-            let r = RMIN + (RMAX - RMIN) * i as f32 / SAMPLES as f32;
-            let d = self.clearance(focus, dir, max_dist, r);
-            if i == SAMPLES {
-                dmin = d;
+    /// The coarse ladder alone quantizes the result (the winning rung moves
+    /// in steps of K·Δr as an edge sweeps past), so after picking a winner
+    /// the cliff edge between it and its free neighbor is bisected —
+    /// clearance is monotone non-increasing in radius, which makes that
+    /// search sound — and the minimum cost over every cast wins.
+    ///
+    /// Grazing filter: geometry the sweep slides PAST must not pull the
+    /// camera in — hugging a wall while looking along it would otherwise
+    /// cost credit-only (a trimesh reports fresh triangle contacts at
+    /// toi≈0 even with stop_at_penetration=false). Each anticipation
+    /// sample is weighted by how much its hit normal opposes the sweep:
+    /// a ceiling ahead counts fully, a parallel wall not at all, with a
+    /// smooth ramp between so camera swivel can't pop the boom.
+    ///
+    /// Returns [boom, los]: `los` is the thin-sphere line-of-sight distance
+    /// (the hard never-clip ceiling for any smoothing the shell adds).
+    /// Design notes + the alternatives we tried: docs/camera.md.
+    pub fn camera_boom(&self, focus: V3, dir: V3, max_dist: f32) -> [f32; 2] {
+        const SAMPLES: usize = 14;
+        const REFINE: usize = 7;
+        let k = max_dist.max(4.0) / (CAM_RMAX - CAM_RMIN);
+        // sample cost: hit distance blended toward "unobstructed" by how
+        // grazing the contact is, plus the radius credit
+        let sample = |r: f32| -> (f32, f32) {
+            match self.cast_ball(focus, r, dir, max_dist) {
+                // toi ≈ 0 = the sample sphere already overlaps geometry AT
+                // the focus (the wall beside the player, the floor below) —
+                // that is the player's vicinity, not the camera path, and
+                // trimesh penetration contacts carry noise normals anyway.
+                // Short-range camera safety is the thin LoS cast's job.
+                None => (max_dist, max_dist + k * (r - CAM_RMIN)),
+                Some((toi, _)) if toi < 0.05 => {
+                    (toi, max_dist + k * (r - CAM_RMIN))
+                }
+                Some((toi, n)) => {
+                    // cast_ball flips n to oppose dir, so this is ≥ 0
+                    let align = -(n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2]);
+                    let w = ((align - 0.10) / 0.15).clamp(0.0, 1.0);
+                    let d_eff = toi * w + max_dist * (1.0 - w);
+                    (toi, d_eff + k * (r - CAM_RMIN))
+                }
             }
-            let cost = d + k * (r - RMIN);
-            if cost < boom {
-                boom = cost;
-                rstar = r;
+        };
+        let radius = |i: usize| CAM_RMIN + (CAM_RMAX - CAM_RMIN) * i as f32 / SAMPLES as f32;
+        let dmax = self.clearance(focus, dir, max_dist, CAM_RMIN);
+        let mut d = [0f32; SAMPLES + 1];
+        d[0] = dmax;
+        let mut best = (dmax, CAM_RMIN);
+        for i in 1..=SAMPLES {
+            let (toi, cost) = sample(radius(i));
+            d[i] = toi;
+            if cost < best.0 {
+                best = (cost, radius(i));
+            }
+        }
+        // localize the cliff edge left of the winning rung (bisection is
+        // driven by the raw monotone hit distances, cost by the weighted)
+        let win = ((best.1 - CAM_RMIN) / (CAM_RMAX - CAM_RMIN) * SAMPLES as f32).round() as usize;
+        if win > 0 {
+            let (mut lo, mut hi) = (radius(win - 1), radius(win));
+            let (mut dlo, mut dhi) = (d[win - 1], d[win]);
+            for _ in 0..REFINE {
+                let mid = 0.5 * (lo + hi);
+                let (dm, cost) = sample(mid);
+                if cost < best.0 {
+                    best = (cost, mid);
+                }
+                if dm > 0.5 * (dlo + dhi) {
+                    lo = mid;
+                    dlo = dm;
+                } else {
+                    hi = mid;
+                    dhi = dm;
+                }
             }
         }
         // never usefully closer than ~1 unit (unless the pocket truly is)
-        boom = boom.max(1.0f32.min(dmax)).min(max_dist);
-        [boom, rstar, dmin, dmax, RMIN, RMAX, k]
+        let boom = best.0.max(1.0f32.min(dmax)).min(max_dist);
+        [boom, dmax]
     }
 
     /// Chunk colliders whose 32³ cell range can overlap the given AABB.
@@ -306,6 +358,10 @@ impl Phys {
 
 pub const RADIUS: f32 = 0.9;
 pub const HEIGHT: f32 = 3.5;
+/// Camera boom sphere-ladder anchors: RMIN is the camera's physical radius
+/// (a boom ≤ clearance(RMIN) can never clip), RMAX the anticipation reach.
+pub const CAM_RMIN: f32 = 0.4;
+pub const CAM_RMAX: f32 = 2.5;
 const GRAVITY: f32 = 22.0;
 const RUN_SPEED: f32 = 11.0;
 const AIR_CONTROL: f32 = 0.35;

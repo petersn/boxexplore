@@ -95,12 +95,12 @@ and benchmark numbers.
   unwalkable ones are walls. "Stable implies jumpable": resting unwalkably
   (wedge, ledge lip — `rest_ticks`) or sliding grants a tech-out jump
   (weaker hop + kick along the brace normal + brief control lockout, so
-  steep faces can't be climbed by jump-mashing). Chase camera boom is STATELESS
-  (`Phys::camera_boom`, no smoothing/history): a discretized cone cast —
-  min over sphere radii of clearance(r) + K·(r−RMIN) — glides in near
-  ceilings/walls and settles at the thin line-of-sight distance (tested:
-  camera_boom_glides_in_under_ceilings). C in play mode shows the live
-  radius→distance debug plot. `src/play.ts` is only input → wish dir,
+  steep faces can't be climbed by jump-mashing). Chase camera boom: a STATELESS
+  cone cast in the core (`Phys::camera_boom` — min over sphere radii of
+  clearance(r) + K·(r−RMIN), cliff-edge bisection, grazing filter) plus
+  light fast-in/slow-out smoothing in play.ts hard-clamped to line of
+  sight; the body fades as the camera closes in. Design notes + rejected
+  alternatives: docs/camera.md — read it before touching the camera. `src/play.ts` is only input → wish dir,
   the body mesh, and the chase camera: smoothed focus point (swivel stays
   snappy), boom clamped by a backward spherecast (`viewport.distClamp`).
   Editor suspends fly keys + overlays while playing.

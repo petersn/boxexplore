@@ -7,18 +7,21 @@ const RADIUS = 0.9;
 const HEIGHT = 3.5;
 const EYE_HEIGHT = 2.9; // camera focus height on the body
 const FOCUS_SMOOTH = 10; // 1/s — how fast the camera focus catches up
-const PLOT_SAMPLES = 36; // debug plot: clearance curve resolution
+const BOOM_IN = 12; // 1/s — boom pull-in toward a shorter target (fast)
+const BOOM_OUT = 2; // 1/s — boom ease back out when space opens (slow)
+// body fade: fully opaque beyond FADE_FAR, alpha 0.1 at FADE_NEAR
+const FADE_NEAR = 2.0;
+const FADE_FAR = 6.0;
 
 /**
  * Third-person play mode shell. All physics — collision, gravity, jumping,
  * slopes, stepping — runs in the Rust core (boxcore::physics, rapier3d
  * queries over per-chunk trimeshes). This class only maps input to a wish
  * direction, mirrors the resulting pose onto a mesh, and drives the chase
- * camera: the focus point is smoothed (swivel stays snappy) and the boom
- * length is the core's stateless cone-cast (`camera_boom`) — same position
- * and view always give the same distance, gliding in near ceilings/walls
- * instead of snapping. Press C in play mode for the radius→distance debug
- * plot behind that decision.
+ * camera: the focus point is smoothed (swivel stays snappy), and the boom
+ * length is the core's stateless cone-cast (`camera_boom`, docs/camera.md)
+ * plus a light fast-in/slow-out smoothing, hard-clamped to line of sight.
+ * The body fades out as the camera closes in so it never fills the screen.
  */
 export class PlayController {
   readonly group = new THREE.Group();
@@ -26,29 +29,31 @@ export class PlayController {
   onGround = false;
 
   private body: THREE.Mesh;
+  private mats: THREE.MeshBasicMaterial[];
   private facing = 0;
   private focus = new THREE.Vector3();
-  private plot: HTMLCanvasElement | null = null;
-  private plotOn = true;
+  private boom = -1; // smoothed boom length (-1 = uninitialized)
 
   constructor(private world: WorldHandle) {
     const geo = new THREE.CylinderGeometry(RADIUS, RADIUS, HEIGHT, 24);
     const mat = new THREE.MeshBasicMaterial({ color: 0xffb454 });
     this.body = new THREE.Mesh(geo, mat);
     // simple facing indicator: a darker nose strip
-    const nose = new THREE.Mesh(
-      new THREE.BoxGeometry(0.25, HEIGHT * 0.5, 0.35),
-      new THREE.MeshBasicMaterial({ color: 0x8a5a1e }),
-    );
+    const noseMat = new THREE.MeshBasicMaterial({ color: 0x8a5a1e });
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(0.25, HEIGHT * 0.5, 0.35), noseMat);
     nose.position.set(0, HEIGHT * 0.15, -RADIUS);
     this.body.add(nose);
-    const eye = new THREE.Mesh(
-      new THREE.SphereGeometry(0.18, 10, 10),
-      new THREE.MeshBasicMaterial({ color: 0x15171b }),
-    );
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x15171b });
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 10), eyeMat);
     eye.position.set(0, HEIGHT * 0.35, -RADIUS * 0.85);
     this.body.add(eye);
     this.group.add(this.body);
+    // the camera can get close: render both sides and allow fading
+    this.mats = [mat, noseMat, eyeMat];
+    for (const m of this.mats) {
+      m.side = THREE.DoubleSide;
+      m.transparent = true;
+    }
   }
 
   /** Drop the player onto the ground near a point (or hover if there's none). */
@@ -56,19 +61,8 @@ export class PlayController {
     const p = this.world.playerSpawn(x, z);
     this.pos.set(p.x, p.y, p.z);
     this.focus.set(p.x, p.y + EYE_HEIGHT, p.z);
+    this.boom = -1;
     this.syncMesh();
-  }
-
-  /** C key: show/hide the camera-boom debug plot. */
-  togglePlot(): void {
-    this.plotOn = !this.plotOn;
-    if (this.plot) this.plot.style.display = this.plotOn ? 'block' : 'none';
-  }
-
-  /** Remove DOM leftovers when leaving play mode. */
-  dispose(): void {
-    this.plot?.remove();
-    this.plot = null;
   }
 
   update(dt: number, held: (k: string) => boolean, viewport: Viewport): void {
@@ -97,113 +91,34 @@ export class PlayController {
     this.focus.lerp(want, 1 - Math.exp(-FOCUS_SMOOTH * dt));
     viewport.target.copy(this.focus);
 
-    // -- boom length: the core's stateless cone-cast over sphere radii
-    const cp2 = Math.cos(viewport.pitch);
+    // -- boom: stateless cone-cast target, smoothed fast-in/slow-out; the
+    // thin line-of-sight distance is a hard clamp so the smoothing lag can
+    // never push the camera into geometry
+    const cp = Math.cos(viewport.pitch);
     const back = {
-      x: cp2 * Math.cos(viewport.yaw),
+      x: cp * Math.cos(viewport.yaw),
       y: Math.sin(viewport.pitch),
-      z: cp2 * Math.sin(viewport.yaw),
+      z: cp * Math.sin(viewport.yaw),
     };
-    const fp = { x: this.focus.x, y: this.focus.y, z: this.focus.z };
-    const cb = this.world.cameraBoom(fp, back, viewport.dist);
-    viewport.distClamp = cb.boom;
-    if (this.plotOn) this.drawPlot(fp, back, viewport.dist, cb);
-  }
+    const cb = this.world.cameraBoom(
+      { x: this.focus.x, y: this.focus.y, z: this.focus.z },
+      back,
+      viewport.dist,
+    );
+    if (this.boom < 0) this.boom = cb.boom;
+    const k = cb.boom < this.boom ? BOOM_IN : BOOM_OUT;
+    this.boom += (cb.boom - this.boom) * (1 - Math.exp(-k * dt));
+    this.boom = Math.min(this.boom, cb.los);
+    viewport.distClamp = this.boom;
 
-  /**
-   * Debug plot of the camera decision: the sampled clearance-vs-radius
-   * curve (cyan), dmin/dmax anchor levels, the fixed-slope trend line
-   * through the winning sample (its intercept at rmin IS the boom), and
-   * the chosen point. Everything camera_boom sees, drawn per frame.
-   */
-  private drawPlot(
-    fp: { x: number; y: number; z: number },
-    back: { x: number; y: number; z: number },
-    dist: number,
-    cb: { boom: number; rstar: number; dmin: number; dmax: number; rmin: number; rmax: number; k: number },
-  ): void {
-    if (!this.plot) {
-      this.plot = document.createElement('canvas');
-      this.plot.width = 320;
-      this.plot.height = 200;
-      this.plot.style.cssText =
-        'position:absolute;right:12px;bottom:34px;background:rgba(12,14,18,0.82);' +
-        'border:1px solid #2a2f3a;border-radius:4px;pointer-events:none;z-index:30;';
-      document.getElementById('viewport-wrap')!.appendChild(this.plot);
-      this.plot.style.display = this.plotOn ? 'block' : 'none';
-    }
-    const g = this.plot.getContext('2d')!;
-    const W = this.plot.width;
-    const H = this.plot.height;
-    const mL = 34;
-    const mR = 10;
-    const mT = 16;
-    const mB = 24;
-    const rSpan = cb.rmax - cb.rmin;
-    const X = (r: number) => mL + ((r - cb.rmin) / rSpan) * (W - mL - mR);
-    const Y = (d: number) => H - mB - (Math.min(d, dist) / dist) * (H - mT - mB);
-    g.clearRect(0, 0, W, H);
-    g.font = '10px monospace';
-
-    // axes
-    g.strokeStyle = '#3a4150';
-    g.beginPath();
-    g.moveTo(mL, mT);
-    g.lineTo(mL, H - mB);
-    g.lineTo(W - mR, H - mB);
-    g.stroke();
-    g.fillStyle = '#8a93a5';
-    g.fillText('radius →', W - 60, H - 8);
-    g.fillText(cb.rmin.toFixed(1), mL - 4, H - 10);
-    g.fillText(cb.rmax.toFixed(1), W - mR - 16, H - 10);
-
-    // dmin / dmax levels
-    g.strokeStyle = '#5a6274';
-    g.setLineDash([3, 3]);
-    for (const [d, label] of [
-      [cb.dmax, `dmax ${cb.dmax.toFixed(1)}`],
-      [cb.dmin, `dmin ${cb.dmin.toFixed(1)}`],
-    ] as Array<[number, string]>) {
-      g.beginPath();
-      g.moveTo(mL, Y(d));
-      g.lineTo(W - mR, Y(d));
-      g.stroke();
-      g.fillText(label, mL + 4, Y(d) - 3);
-    }
-    g.setLineDash([]);
-
-    // sampled clearance curve
-    g.strokeStyle = '#57d3f2';
-    g.beginPath();
-    for (let i = 0; i <= PLOT_SAMPLES; i++) {
-      const r = cb.rmin + (rSpan * i) / PLOT_SAMPLES;
-      const d = this.world.cameraClearance(fp, back, dist, r);
-      if (i === 0) g.moveTo(X(r), Y(d));
-      else g.lineTo(X(r), Y(d));
-    }
-    g.stroke();
-
-    // fixed-slope trend line through the winning sample: d = boom − k·(r − rmin)
-    g.strokeStyle = '#ffb454';
-    g.setLineDash([5, 3]);
-    g.beginPath();
-    g.moveTo(X(cb.rmin), Y(cb.boom));
-    const rEnd = Math.min(cb.rmax, cb.rmin + cb.boom / cb.k);
-    g.lineTo(X(rEnd), Y(cb.boom - cb.k * (rEnd - cb.rmin)));
-    g.stroke();
-    g.setLineDash([]);
-
-    // chosen sample + resulting boom
-    const dStar = this.world.cameraClearance(fp, back, dist, cb.rstar);
-    g.fillStyle = '#ffb454';
-    g.beginPath();
-    g.arc(X(cb.rstar), Y(dStar), 4, 0, Math.PI * 2);
-    g.fill();
-    g.fillStyle = '#ffe08a';
-    g.beginPath();
-    g.arc(X(cb.rmin), Y(cb.boom), 4, 0, Math.PI * 2);
-    g.fill();
-    g.fillText(`boom ${cb.boom.toFixed(1)}  r* ${cb.rstar.toFixed(2)}`, mL + 4, 12);
+    // -- fade the body out as the camera closes in
+    const camDist = Math.min(viewport.dist, this.boom);
+    const alpha = THREE.MathUtils.clamp(
+      0.1 + 0.9 * ((camDist - FADE_NEAR) / (FADE_FAR - FADE_NEAR)),
+      0.1,
+      1,
+    );
+    for (const m of this.mats) m.opacity = alpha;
   }
 
   private syncMesh(): void {

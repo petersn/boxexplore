@@ -379,19 +379,11 @@ export class WorldHandle {
     return { pos: { x: r[0], y: r[1], z: r[2] }, facing: r[3], onGround: r[4] > 0.5 };
   }
 
-  /** Spherecast from `focus` along `dir`: how far the chase camera may pull back. */
-  cameraClearance(focus: Vec3, dir: Vec3, dist: number, radius: number): number {
-    return this.raw.camera_clearance(focus.x, focus.y, focus.z, dir.x, dir.y, dir.z, dist, radius);
-  }
-
-  /** Stateless boom length: cone-cast over sphere radii (Phys::camera_boom). */
-  cameraBoom(
-    focus: Vec3,
-    dir: Vec3,
-    dist: number,
-  ): { boom: number; rstar: number; dmin: number; dmax: number; rmin: number; rmax: number; k: number } {
+  /** Stateless chase-camera boom length (cone-cast; see docs/camera.md).
+   *  `los` is the hard line-of-sight distance the boom must never exceed. */
+  cameraBoom(focus: Vec3, dir: Vec3, dist: number): { boom: number; los: number } {
     const v = this.raw.camera_boom(focus.x, focus.y, focus.z, dir.x, dir.y, dir.z, dist);
-    return { boom: v[0], rstar: v[1], dmin: v[2], dmax: v[3], rmin: v[4], rmax: v[5], k: v[6] };
+    return { boom: v[0], los: v[1] };
   }
 
   // -- io ---------------------------------------------------------------------------

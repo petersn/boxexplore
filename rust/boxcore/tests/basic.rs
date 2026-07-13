@@ -575,11 +575,10 @@ fn camera_boom_glides_in_under_ceilings() {
     let dir = [-pitch.cos(), pitch.sin(), 0.0];
     let mut prev = f32::NAN;
     let mut max_step = 0.0f32;
-    for i in 0..60 {
-        let x = -10.0 + i as f32 * 0.5; // -10 → 20
-        let out = phys.camera_boom([x, 2.9, 0.0], dir, 16.0);
-        let (boom, dmax) = (out[0], out[3]);
-        assert!(boom <= dmax + 1e-3, "never exceeds line of sight");
+    for i in 0..300 {
+        let x = -10.0 + i as f32 * 0.1; // -10 → 20
+        let [boom, los] = phys.camera_boom([x, 2.9, 0.0], dir, 16.0);
+        assert!(boom <= los + 1e-3, "never exceeds line of sight");
         if prev.is_finite() {
             max_step = max_step.max((boom - prev).abs());
         }
@@ -591,14 +590,33 @@ fn camera_boom_glides_in_under_ceilings() {
     // (not the hyper-conservative fat-sphere distance)
     let deep = phys.camera_boom([14.0, 2.9, 0.0], dir, 16.0);
     assert!(
-        (deep[0] - deep[3]).abs() < 0.05 && deep[0] < 9.0,
-        "settles at the under-ceiling LoS: boom={} dmax={}",
+        (deep[0] - deep[1]).abs() < 0.05 && deep[0] < 9.0,
+        "settles at the under-ceiling LoS: boom={} los={}",
         deep[0],
-        deep[3]
+        deep[1]
     );
     // and the walk from open field to settled is a glide, never a snap
     assert!(
-        max_step < 1.0,
+        max_step < 0.5,
         "boom changes gradually while walking (max step {max_step})"
     );
+}
+
+#[test]
+fn camera_boom_ignores_grazing_side_walls() {
+    use boxcore::physics::Phys;
+    let mut store = ChunkStore::new();
+    let offsets = Offsets::default();
+    let paints = Paints::default();
+    store.fill_box((-30, -1, -10), (10, 0, 10), true); // floor
+    store.fill_box((-30, 0, 1), (10, 24, 3), true); // tall wall 1.0 to the side
+    let phys = phys_for(&store, &offsets);
+    // boom runs parallel to the wall: the fat anticipation spheres OVERLAP
+    // it from the start, but a sweep that doesn't deepen the overlap
+    // reports nothing (stop_at_penetration=false) — hugging a wall while
+    // the camera looks along it must not pull the boom in
+    let pitch: f32 = 0.35;
+    let dir = [-pitch.cos(), pitch.sin(), 0.0];
+    let [boom, _] = phys.camera_boom([0.0, 2.9, 0.0], dir, 16.0);
+    assert!((boom - 16.0).abs() < 1e-3, "parallel side wall ignored: {boom}");
 }
