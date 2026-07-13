@@ -11,7 +11,7 @@ import { mkdirSync } from 'node:fs';
 mkdirSync(SHOTS, { recursive: true });
 
 const errors = [];
-const browser = await chromium.launch();
+const browser = await chromium.launch({ args: ['--enable-unsafe-webgpu'] });
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 page.on('pageerror', (err) => errors.push(err.message));
@@ -462,6 +462,7 @@ await page.evaluate(() => {
 });
 await clickWorld({ x: 1.5, y: 0, z: -0.5 });
 check('click paints one face', (await paints()) === 1, `${await paints()} paints`);
+await page.waitForTimeout(120); // the gfx chunk rebuild lands on the next frame
 const p0 = await page.evaluate(() =>
   window.editor.world.getPaint({ cell: [1, -1, -1], dir: 2 }),
 );
@@ -572,8 +573,6 @@ await page.evaluate(() => {
       w.setShiftRaw(6 + i, 1 + i, z, [0, 0.5, 0]);
     }
   }
-  ed.renderer.rebuildAll(w);
-  w.raw.take_dirty();
   ed.viewport.target.set(0, 0.5, 0);
 });
 await page.keyboard.press('g');

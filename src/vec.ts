@@ -38,3 +38,54 @@ export const vkey = (a: Vec3): string =>
   `${Math.round(a.x * 1024)},${Math.round(a.y * 1024)},${Math.round(a.z * 1024)}`;
 
 export const snap = (value: number, step: number): number => Math.round(value / step) * step;
+
+/** Mutable vector with the small three.js-style API the camera rig uses. */
+export class MVec {
+  x = 0;
+  y = 0;
+  z = 0;
+
+  constructor(x = 0, y = 0, z = 0) {
+    this.set(x, y, z);
+  }
+
+  set(x: number, y: number, z: number): this {
+    this.x = x;
+    this.y = y;
+    this.z = z;
+    return this;
+  }
+
+  copy(o: Vec3): this {
+    return this.set(o.x, o.y, o.z);
+  }
+
+  clone(): MVec {
+    return new MVec(this.x, this.y, this.z);
+  }
+
+  add(o: Vec3): this {
+    return this.set(this.x + o.x, this.y + o.y, this.z + o.z);
+  }
+
+  addScaled(o: Vec3, s: number): this {
+    return this.set(this.x + o.x * s, this.y + o.y * s, this.z + o.z * s);
+  }
+
+  lerp(o: Vec3, t: number): this {
+    return this.set(
+      this.x + (o.x - this.x) * t,
+      this.y + (o.y - this.y) * t,
+      this.z + (o.z - this.z) * t,
+    );
+  }
+}
+
+/** sRGB display color (0xRRGGBB) → linear RGB triple for the renderer. */
+export function srgbHex(hex: number): [number, number, number] {
+  const c = (v: number) => {
+    const s = v / 255;
+    return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return [c((hex >> 16) & 255), c((hex >> 8) & 255), c(hex & 255)];
+}

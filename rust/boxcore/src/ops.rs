@@ -1342,3 +1342,191 @@ pub fn shortest_path(store: &ChunkStore, offsets: &Offsets, from: IV, to: IV) ->
     }
     path
 }
+
+// ---------------------------------------------------------------------------
+// Picking (ray → surface face, exact against the rendered quads)
+// ---------------------------------------------------------------------------
+
+/// Möller–Trumbore; returns t along the (unit) ray.
+fn ray_tri(o: V3, d: V3, a: V3, b: V3, c: V3) -> Option<f32> {
+    use crate::v3_dot;
+    let e1 = v3_sub(b, a);
+    let e2 = v3_sub(c, a);
+    let p = crate::v3_cross(d, e2);
+    let det = v3_dot(e1, p);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let tv = v3_sub(o, a);
+    let u = v3_dot(tv, p) * inv;
+    if !(-1e-5..=1.00001).contains(&u) {
+        return None;
+    }
+    let q = crate::v3_cross(tv, e1);
+    let v = v3_dot(d, q) * inv;
+    if v < -1e-5 || u + v > 1.00001 {
+        return None;
+    }
+    let t = v3_dot(e2, q) * inv;
+    (t > 1e-5).then_some(t)
+}
+
+fn ray_quad(o: V3, d: V3, q: &[f32; 12]) -> Option<f32> {
+    let q: [V3; 4] = [
+        [q[0], q[1], q[2]],
+        [q[3], q[4], q[5]],
+        [q[6], q[7], q[8]],
+        [q[9], q[10], q[11]],
+    ];
+    match (ray_tri(o, d, q[0], q[1], q[2]), ray_tri(o, d, q[0], q[2], q[3])) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// First face hit by a ray, exact against the (possibly displaced) quads the
+/// renderer draws. A cell DDA walks the grid — hopping whole absent chunks in
+/// one step — and tests the exposed faces bounding each traversed cell; since
+/// offsets displace corners at most half a cell, a hit is always found within
+/// a cell of where its quad lives. Returns (cell, dir, hit point, t).
+pub fn pick(
+    store: &ChunkStore,
+    offsets: &Offsets,
+    origin: V3,
+    dir: V3,
+    max_dist: f32,
+    sculpted: bool,
+) -> Option<(IV, usize, V3, f32)> {
+    let d = v3_norm(dir);
+    if v3_len(d) < 0.5 || !origin.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let mut best: Option<(IV, usize, f32)> = None;
+
+    // test all exposed faces that bound `cell` (faces of solid neighbors
+    // facing into it, plus its own faces if the cell itself is solid)
+    let mut test_around = |cell: IV, best: &mut Option<(IV, usize, f32)>| {
+        let solid = store.get(cell);
+        for (di, dv) in DIRS.iter().enumerate() {
+            let n = add_iv(cell, *dv);
+            if solid && !store.get(n) {
+                // own exposed face
+                if let Some(q) = crate::mesh::face_quad(store, offsets, cell, di, sculpted) {
+                    if let Some(t) = ray_quad(origin, d, &q) {
+                        if t <= max_dist && best.as_ref().is_none_or(|b| t < b.2) {
+                            *best = Some((cell, di, t));
+                        }
+                    }
+                }
+            } else if !solid && store.get(n) {
+                // neighbor's face pointing into this cell
+                let facing = di ^ 1;
+                if let Some(q) = crate::mesh::face_quad(store, offsets, n, facing, sculpted) {
+                    if let Some(t) = ray_quad(origin, d, &q) {
+                        if t <= max_dist && best.as_ref().is_none_or(|b| t < b.2) {
+                            *best = Some((n, facing, t));
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    // cell DDA
+    let mut cell = (
+        origin[0].floor() as i32,
+        origin[1].floor() as i32,
+        origin[2].floor() as i32,
+    );
+    let step = (
+        if d[0] > 0.0 { 1 } else { -1 },
+        if d[1] > 0.0 { 1 } else { -1 },
+        if d[2] > 0.0 { 1 } else { -1 },
+    );
+    let next_t = |cell: IV, t_base: f32| -> [f32; 3] {
+        let mut out = [f32::INFINITY; 3];
+        for a in 0..3 {
+            let da = d[a];
+            if da.abs() < 1e-12 {
+                continue;
+            }
+            let c = [cell.0, cell.1, cell.2][a] as f32;
+            let edge = if da > 0.0 { c + 1.0 } else { c };
+            out[a] = (edge - origin[a]) / da;
+        }
+        let _ = t_base;
+        out
+    };
+    let mut t = 0.0f32;
+    let mut guard = 0;
+    while t <= max_dist && guard < 4096 {
+        guard += 1;
+        // hop absent chunks in one step
+        let cp = crate::store::cpos_of(cell);
+        if !store.chunks.contains_key(&cp) && best.is_none() {
+            // exit t of the 32³ chunk box
+            let mut exit = f32::INFINITY;
+            for a in 0..3 {
+                let da = d[a];
+                if da.abs() < 1e-12 {
+                    continue;
+                }
+                let base = [cp.0, cp.1, cp.2][a] as f32 * crate::store::S as f32;
+                let bound = if da > 0.0 {
+                    base + crate::store::S as f32
+                } else {
+                    base
+                };
+                exit = exit.min((bound - origin[a]) / da);
+            }
+            if !exit.is_finite() || exit <= t {
+                break;
+            }
+            t = exit + 1e-4;
+            let p = [
+                origin[0] + d[0] * t,
+                origin[1] + d[1] * t,
+                origin[2] + d[2] * t,
+            ];
+            cell = (p[0].floor() as i32, p[1].floor() as i32, p[2].floor() as i32);
+            continue;
+        }
+        test_around(cell, &mut best);
+        // done? (a hit can't appear more than ~1 cell behind the frontier)
+        if let Some((_, _, bt)) = best {
+            if bt + 1.8 < t {
+                break;
+            }
+        }
+        // step to the next cell
+        let tm = next_t(cell, t);
+        let axis = if tm[0] <= tm[1] && tm[0] <= tm[2] {
+            0
+        } else if tm[1] <= tm[2] {
+            1
+        } else {
+            2
+        };
+        t = tm[axis];
+        match axis {
+            0 => cell.0 += step.0,
+            1 => cell.1 += step.1,
+            _ => cell.2 += step.2,
+        }
+    }
+    best.map(|(c, di, t)| {
+        (
+            c,
+            di,
+            [
+                origin[0] + d[0] * t,
+                origin[1] + d[1] * t,
+                origin[2] + d[2] * t,
+            ],
+            t,
+        )
+    })
+}

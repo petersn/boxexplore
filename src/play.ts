@@ -1,6 +1,6 @@
-import * as THREE from 'three';
 import type { WorldHandle } from './world';
 import type { Viewport } from './viewport';
+import { MVec, type Vec3, cross, norm, srgbHex, v3 } from './vec';
 
 // Body dimensions mirror boxcore::physics (world scale ≈ 2 units per meter).
 const RADIUS = 0.9;
@@ -12,48 +12,49 @@ const BOOM_OUT = 2; // 1/s — boom ease back out when space opens (slow)
 // body fade: fully opaque beyond FADE_FAR, alpha 0.1 at FADE_NEAR
 const FADE_NEAR = 2.0;
 const FADE_FAR = 6.0;
+const SEG = 20;
 
 /**
- * Third-person play mode shell. All physics — collision, gravity, jumping,
- * slopes, stepping — runs in the Rust core (boxcore::physics, rapier3d
- * queries over per-chunk trimeshes). This class only maps input to a wish
- * direction, mirrors the resulting pose onto a mesh, and drives the chase
- * camera: the focus point is smoothed (swivel stays snappy), and the boom
- * length is the core's stateless cone-cast (`camera_boom`, docs/camera.md)
- * plus a light fast-in/slow-out smoothing, hard-clamped to line of sight.
- * The body fades out as the camera closes in so it never fills the screen.
+ * Third-person play mode shell. All physics runs in the Rust core
+ * (boxcore::physics); rendering too (the body is uploaded as an overlay
+ * triangle list each frame). This class maps input to a wish direction and
+ * drives the chase camera: smoothed focus point, stateless cone-cast boom
+ * (docs/camera.md) with fast-in/slow-out smoothing, hard line-of-sight clamp.
  */
 export class PlayController {
-  readonly group = new THREE.Group();
-  pos = new THREE.Vector3();
+  pos = new MVec();
   onGround = false;
 
-  private body: THREE.Mesh;
-  private mats: THREE.MeshBasicMaterial[];
   private facing = 0;
-  private focus = new THREE.Vector3();
+  private focus = new MVec();
   private boom = -1; // smoothed boom length (-1 = uninitialized)
+  /** Unit-cylinder body triangles (model space), transformed every frame. */
+  private model: { pos: Vec3; part: number }[] = [];
 
   constructor(private world: WorldHandle) {
-    const geo = new THREE.CylinderGeometry(RADIUS, RADIUS, HEIGHT, 24);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffb454 });
-    this.body = new THREE.Mesh(geo, mat);
-    // simple facing indicator: a darker nose strip
-    const noseMat = new THREE.MeshBasicMaterial({ color: 0x8a5a1e });
-    const nose = new THREE.Mesh(new THREE.BoxGeometry(0.25, HEIGHT * 0.5, 0.35), noseMat);
-    nose.position.set(0, HEIGHT * 0.15, -RADIUS);
-    this.body.add(nose);
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x15171b });
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 10), eyeMat);
-    eye.position.set(0, HEIGHT * 0.35, -RADIUS * 0.85);
-    this.body.add(eye);
-    this.group.add(this.body);
-    // the camera can get close: render both sides and allow fading
-    this.mats = [mat, noseMat, eyeMat];
-    for (const m of this.mats) {
-      m.side = THREE.DoubleSide;
-      m.transparent = true;
+    const tri = (part: number, a: Vec3, b: Vec3, c: Vec3) => {
+      this.model.push({ pos: a, part }, { pos: b, part }, { pos: c, part });
+    };
+    // cylinder sides + caps
+    for (let i = 0; i < SEG; i++) {
+      const a0 = (i / SEG) * Math.PI * 2;
+      const a1 = ((i + 1) / SEG) * Math.PI * 2;
+      const p00 = v3(Math.cos(a0) * RADIUS, 0, Math.sin(a0) * RADIUS);
+      const p10 = v3(Math.cos(a1) * RADIUS, 0, Math.sin(a1) * RADIUS);
+      const p01 = v3(p00.x, HEIGHT, p00.z);
+      const p11 = v3(p10.x, HEIGHT, p10.z);
+      tri(0, p00, p10, p11);
+      tri(0, p00, p11, p01);
+      tri(0, v3(0, HEIGHT, 0), p11, p10); // top cap
+      tri(0, v3(0, 0, 0), p00, p10); // bottom cap
     }
+    // nose: a darker strip marking the facing direction (-z in model space)
+    const nz = -RADIUS - 0.02;
+    const w = 0.16;
+    const y0 = HEIGHT * 0.35;
+    const y1 = HEIGHT * 0.85;
+    tri(1, v3(-w, y0, nz), v3(w, y0, nz), v3(w, y1, nz));
+    tri(1, v3(-w, y0, nz), v3(w, y1, nz), v3(-w, y1, nz));
   }
 
   /** Drop the player onto the ground near a point (or hover if there's none). */
@@ -62,37 +63,52 @@ export class PlayController {
     this.pos.set(p.x, p.y, p.z);
     this.focus.set(p.x, p.y + EYE_HEIGHT, p.z);
     this.boom = -1;
-    this.syncMesh();
+    this.uploadBody(1);
   }
 
   update(dt: number, held: (k: string) => boolean, viewport: Viewport): void {
     // -- input → wish direction (camera-yaw relative)
     const f = viewport.forward();
-    const fwd = new THREE.Vector3(f.x, 0, f.z);
-    if (fwd.lengthSq() < 1e-6) fwd.set(1, 0, 0);
-    fwd.normalize();
-    const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).negate();
-    const wish = new THREE.Vector3();
-    if (held('w')) wish.add(fwd);
-    if (held('s')) wish.sub(fwd);
-    if (held('d')) wish.sub(right);
-    if (held('a')) wish.add(right);
-    if (wish.lengthSq() > 0) wish.normalize();
+    let fwd = v3(f.x, 0, f.z);
+    fwd = fwd.x * fwd.x + fwd.z * fwd.z < 1e-6 ? v3(1, 0, 0) : norm(fwd);
+    const right = norm(cross(fwd, v3(0, 1, 0)));
+    let wx = 0;
+    let wz = 0;
+    if (held('w')) {
+      wx += fwd.x;
+      wz += fwd.z;
+    }
+    if (held('s')) {
+      wx -= fwd.x;
+      wz -= fwd.z;
+    }
+    if (held('d')) {
+      wx -= right.x;
+      wz -= right.z;
+    }
+    if (held('a')) {
+      wx += right.x;
+      wz += right.z;
+    }
+    const wl = Math.hypot(wx, wz);
+    if (wl > 1e-9) {
+      wx /= wl;
+      wz /= wl;
+    }
 
     // -- step the Rust controller
-    const r = this.world.playerUpdate(dt, wish.x, wish.z, held(' '));
+    const r = this.world.playerUpdate(dt, wx, wz, held(' '));
     this.pos.set(r.pos.x, r.pos.y, r.pos.z);
     this.facing = r.facing;
     this.onGround = r.onGround;
-    this.syncMesh();
 
     // -- chase camera: smooth only the focus point; swivel stays snappy
-    const want = new THREE.Vector3(this.pos.x, this.pos.y + EYE_HEIGHT, this.pos.z);
+    const want = v3(this.pos.x, this.pos.y + EYE_HEIGHT, this.pos.z);
     this.focus.lerp(want, 1 - Math.exp(-FOCUS_SMOOTH * dt));
     viewport.target.copy(this.focus);
 
     // -- boom: stateless cone-cast target, smoothed fast-in/slow-out; the
-    // thin line-of-sight distance is a hard clamp so the smoothing lag can
+    // thin line-of-sight distance is a hard clamp so smoothing lag can
     // never push the camera into geometry
     const cp = Math.cos(viewport.pitch);
     const back = {
@@ -111,18 +127,30 @@ export class PlayController {
     this.boom = Math.min(this.boom, cb.los);
     viewport.distClamp = this.boom;
 
-    // -- fade the body out as the camera closes in
+    // -- body: fade out as the camera closes in, transform, upload
     const camDist = Math.min(viewport.dist, this.boom);
-    const alpha = THREE.MathUtils.clamp(
-      0.1 + 0.9 * ((camDist - FADE_NEAR) / (FADE_FAR - FADE_NEAR)),
-      0.1,
-      1,
-    );
-    for (const m of this.mats) m.opacity = alpha;
+    const alpha = Math.min(1, Math.max(0.1, 0.1 + (0.9 * (camDist - FADE_NEAR)) / (FADE_FAR - FADE_NEAR)));
+    this.uploadBody(alpha);
   }
 
-  private syncMesh(): void {
-    this.body.position.set(this.pos.x, this.pos.y + HEIGHT / 2, this.pos.z);
-    this.body.rotation.y = this.facing + Math.PI;
+  private uploadBody(alpha: number): void {
+    const body = srgbHex(0xffb454);
+    const nose = srgbHex(0x8a5a1e);
+    const cosF = Math.cos(this.facing + Math.PI);
+    const sinF = Math.sin(this.facing + Math.PI);
+    const out = new Float32Array(this.model.length * 7);
+    let i = 0;
+    for (const v of this.model) {
+      // rotate around y by facing, translate to pos
+      out[i++] = this.pos.x + v.pos.x * cosF + v.pos.z * sinF;
+      out[i++] = this.pos.y + v.pos.y;
+      out[i++] = this.pos.z - v.pos.x * sinF + v.pos.z * cosF;
+      const c = v.part === 0 ? body : nose;
+      out[i++] = c[0];
+      out[i++] = c[1];
+      out[i++] = c[2];
+      out[i++] = alpha;
+    }
+    this.world.raw.gfx_set_player(out);
   }
 }

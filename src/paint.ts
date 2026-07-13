@@ -194,12 +194,8 @@ export class PaintMode {
       for (let i = 1; i <= steps; i++) {
         const x = prev.x + (dx * i) / steps;
         const y = prev.y + (dy * i) / steps;
-        const hit = ed.viewport.pickGroupAt(x, y, ed.renderer.group);
-        if (!hit || hit.faceIndex == null) continue;
-        const face = ed.renderer.faceAt(hit.object, hit.faceIndex);
-        if (face) {
-          this.applyAt({ x: hit.point.x, y: hit.point.y, z: hit.point.z }, face);
-        }
+        const hit = ed.pickVolFaceAt(x, y);
+        if (hit) this.applyAt(hit.point, hit.face);
       }
       this.lastPt = cur;
       return;

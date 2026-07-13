@@ -34,7 +34,7 @@ impl ChunkMesh {
     }
 
     /// Append `other`'s faces after this mesh's (rebasing indices).
-    fn append(&mut self, other: ChunkMesh) {
+    pub fn append(&mut self, other: ChunkMesh) {
         let vbase = (self.positions.len() / 3) as u32;
         self.positions.extend_from_slice(&other.positions);
         self.colors.extend_from_slice(&other.colors);

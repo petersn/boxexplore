@@ -1,6 +1,16 @@
 /* tslint:disable */
 /* eslint-disable */
 
+/**
+ * Async wgpu setup result, handed to `World::gfx_attach` (wasm_bindgen
+ * cannot await inside a &mut self method).
+ */
+export class GfxInit {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+}
+
 export class World {
     free(): void;
     [Symbol.dispose](): void;
@@ -47,6 +57,35 @@ export class World {
      * [] when absent, [x, y, z] when present.
      */
     get_shift(x: number, y: number, z: number): Float32Array;
+    gfx_attach(init: GfxInit): void;
+    /**
+     * Render one frame (also drains document dirt into remesh work).
+     */
+    gfx_frame(ex: number, ey: number, ez: number, fx: number, fy: number, fz: number, fov_y: number, near: number, far: number): void;
+    gfx_overlay_lines(which: number, points: Float32Array, r: number, gr: number, b: number, a: number): void;
+    gfx_overlay_lines_colored(which: number, data: Float32Array): void;
+    /**
+     * Overlay slots: 0 ghost, 1 selection fill, 2 selection lines,
+     * 3 constraint lines, 4 brush ring, 5 axes, 6 stamp ghost, 7 player.
+     */
+    gfx_overlay_quads(which: number, quads: Float32Array, uvs: Float32Array, r: number, gr: number, b: number, a: number): void;
+    gfx_ready(): boolean;
+    gfx_resize(w: number, h: number): void;
+    /**
+     * Corner handles (pos3, pixel size, rgba4 per instance); empty hides.
+     */
+    gfx_set_handles(data: Float32Array): void;
+    gfx_set_lod_scale(k: number): void;
+    /**
+     * Player body triangles (pos3 + rgba4 per vertex); empty hides it.
+     */
+    gfx_set_player(data: Float32Array): void;
+    gfx_set_tileset(w: number, h: number, rgba: Uint8Array): void;
+    gfx_set_view(sculpted: boolean, tint: boolean, paint: boolean): void;
+    /**
+     * [chunks, regions, paintedFaces, pendingRebuilds, drawCalls, lod0..lod4]
+     */
+    gfx_stats(): Uint32Array;
     /**
      * Load a v6 binary document (replaces the current one entirely).
      */
@@ -78,6 +117,11 @@ export class World {
     paint_face(x: number, y: number, z: number, d: number, tx: number, ty: number, rot: number, fh: boolean, fv: boolean): boolean;
     paint_stroke_begin(): void;
     paint_stroke_end(): boolean;
+    /**
+     * First face hit by a ray, exact against the rendered quads.
+     * [] on miss, else [cellx, celly, cellz, dir, px, py, pz, t].
+     */
+    pick(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max_dist: number, sculpted: boolean): Float32Array;
     /**
      * Drop the player onto the ground near (x, z); returns [x, y, z].
      */
@@ -127,11 +171,18 @@ export class World {
     visible_corners(ex: number, ey: number, ez: number, max_dist: number): Float32Array;
 }
 
+/**
+ * Create the renderer for a canvas (async: adapter + device negotiation).
+ */
+export function gfx_create(canvas: HTMLCanvasElement, width: number, height: number): Promise<GfxInit>;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_gfxinit_free: (a: number, b: number) => void;
     readonly __wbg_world_free: (a: number, b: number) => void;
+    readonly gfx_create: (a: any, b: number, c: number) => any;
     readonly world_all_chunk_positions: (a: number) => [number, number];
     readonly world_approx_bytes: (a: number) => number;
     readonly world_camera_boom: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
@@ -152,6 +203,19 @@ export interface InitOutput {
     readonly world_get_cell: (a: number, b: number, c: number, d: number) => number;
     readonly world_get_paint: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly world_get_shift: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly world_gfx_attach: (a: number, b: number) => void;
+    readonly world_gfx_frame: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
+    readonly world_gfx_overlay_lines: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly world_gfx_overlay_lines_colored: (a: number, b: number, c: number, d: number) => void;
+    readonly world_gfx_overlay_quads: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
+    readonly world_gfx_ready: (a: number) => number;
+    readonly world_gfx_resize: (a: number, b: number, c: number) => void;
+    readonly world_gfx_set_handles: (a: number, b: number, c: number) => void;
+    readonly world_gfx_set_lod_scale: (a: number, b: number) => void;
+    readonly world_gfx_set_player: (a: number, b: number, c: number) => void;
+    readonly world_gfx_set_tileset: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly world_gfx_set_view: (a: number, b: number, c: number, d: number) => void;
+    readonly world_gfx_stats: (a: number) => [number, number];
     readonly world_load_bin: (a: number, b: number, c: number) => number;
     readonly world_make_slab: (a: number, b: number, c: number, d: number) => number;
     readonly world_max_shift_abs: (a: number) => number;
@@ -168,6 +232,7 @@ export interface InitOutput {
     readonly world_paint_face: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
     readonly world_paint_stroke_begin: (a: number) => void;
     readonly world_paint_stroke_end: (a: number) => number;
+    readonly world_pick: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
     readonly world_player_spawn: (a: number, b: number, c: number) => [number, number];
     readonly world_player_update: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly world_rect_corners: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
@@ -189,9 +254,19 @@ export interface InitOutput {
     readonly world_to_bin: (a: number) => [number, number];
     readonly world_undo: (a: number) => number;
     readonly world_visible_corners: (a: number, b: number, c: number, d: number, e: number) => [number, number];
-    readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h609039506a690efe: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h39705e9b39b7acd9: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h39705e9b39b7acd9_2: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h39705e9b39b7acd9_3: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h2a35fd21e48d687e: (a: number, b: number, c: any, d: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
+    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_exn_store: (a: number) => void;
+    readonly __externref_table_alloc: () => number;
+    readonly __wbindgen_externrefs: WebAssembly.Table;
+    readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

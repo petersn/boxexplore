@@ -1,8 +1,6 @@
-import * as THREE from 'three';
-
 export interface UVRect {
   u0: number; // left
-  v0: number; // bottom (three.js convention, flipY texture)
+  v0: number; // bottom (flipY texture convention)
   u1: number; // right
   v1: number; // top
 }
@@ -14,7 +12,6 @@ export interface UVRect {
 export class Tileset {
   readonly canvas = document.createElement('canvas');
   private readonly ctx: CanvasRenderingContext2D;
-  readonly texture: THREE.CanvasTexture;
   tileSize = 16;
   private listeners = new Set<() => void>();
 
@@ -23,11 +20,19 @@ export class Tileset {
     this.canvas.height = 128;
     this.ctx = this.canvas.getContext('2d')!;
     this.drawDefault();
-    this.texture = new THREE.CanvasTexture(this.canvas);
-    this.texture.magFilter = THREE.NearestFilter;
-    this.texture.minFilter = THREE.NearestFilter;
-    this.texture.generateMipmaps = false;
-    this.texture.colorSpace = THREE.SRGBColorSpace;
+  }
+
+  /** Raw pixels for the renderer's atlas upload. Rows are flipped so that
+   *  v=0 is the image's BOTTOM, matching the mesher's flipY UV convention. */
+  rgba(): { width: number; height: number; data: Uint8Array } {
+    const { width, height } = this.canvas;
+    const img = this.ctx.getImageData(0, 0, width, height).data;
+    const out = new Uint8Array(img.length);
+    const row = width * 4;
+    for (let y = 0; y < height; y++) {
+      out.set(img.subarray(y * row, (y + 1) * row), (height - 1 - y) * row);
+    }
+    return { width, height, data: out };
   }
 
   get cols(): number {
@@ -86,7 +91,6 @@ export class Tileset {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.ctx.drawImage(img, 0, 0);
     if (typeof source !== 'string') URL.revokeObjectURL(img.src);
-    this.texture.needsUpdate = true;
     this.emit();
   }
 

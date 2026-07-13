@@ -75,6 +75,8 @@ pub struct World {
     tileset_grid: (u32, u32),
     phys: Phys,
     player: Player,
+    #[cfg(target_arch = "wasm32")]
+    gfx: Option<crate::gfx::Gfx>,
 }
 
 impl Default for World {
@@ -100,6 +102,8 @@ impl World {
             tileset_grid: (8, 8),
             phys: Phys::new(),
             player: Player::new(),
+            #[cfg(target_arch = "wasm32")]
+            gfx: None,
         }
     }
 
@@ -229,6 +233,14 @@ impl World {
 
     pub fn set_tileset_grid(&mut self, cols: u32, rows: u32) {
         self.tileset_grid = (cols.max(1), rows.max(1));
+        #[cfg(target_arch = "wasm32")]
+        if let Some(g) = &mut self.gfx {
+            g.tileset_grid = self.tileset_grid;
+            g.invalidate_all();
+            for cp in self.store.chunks.keys() {
+                self.store.dirty.insert(*cp);
+            }
+        }
     }
 
     pub fn mesh_chunk_lod(&mut self, cx: i32, cy: i32, cz: i32, level: u32) -> u32 {
@@ -692,6 +704,29 @@ impl World {
         self.history.clear();
     }
 
+    /// First face hit by a ray, exact against the rendered quads.
+    /// [] on miss, else [cellx, celly, cellz, dir, px, py, pz, t].
+    #[allow(clippy::too_many_arguments)]
+    pub fn pick(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        max_dist: f32,
+        sculpted: bool,
+    ) -> Vec<f32> {
+        match ops::pick(&self.store, &self.offsets, [ox, oy, oz], [dx, dy, dz], max_dist, sculpted)
+        {
+            None => vec![],
+            Some((c, d, p, t)) => vec![
+                c.0 as f32, c.1 as f32, c.2 as f32, d as f32, p[0], p[1], p[2], t,
+            ],
+        }
+    }
+
     // -- physics + play mode ---------------------------------------------------------
 
     /// Bring physics colliders up to date with the volume (lazy, incremental).
@@ -779,5 +814,178 @@ impl World {
     /// Approximate document heap bytes (for the status/debug display).
     pub fn approx_bytes(&self) -> f64 {
         (self.store.approx_bytes() + self.offsets.map.capacity() * (8 + 12 + 8)) as f64
+    }
+}
+
+/// Async wgpu setup result, handed to `World::gfx_attach` (wasm_bindgen
+/// cannot await inside a &mut self method).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct GfxInit {
+    inner: Option<crate::gfx::Gfx>,
+}
+
+/// Create the renderer for a canvas (async: adapter + device negotiation).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn gfx_create(
+    canvas: web_sys::HtmlCanvasElement,
+    width: u32,
+    height: u32,
+) -> Result<GfxInit, JsValue> {
+    let gfx = crate::gfx::Gfx::new(canvas, width, height)
+        .await
+        .map_err(|e| JsValue::from_str(&e))?;
+    Ok(GfxInit { inner: Some(gfx) })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl World {
+    pub fn gfx_attach(&mut self, mut init: GfxInit) {
+        self.gfx = init.inner.take();
+        if let Some(g) = &mut self.gfx {
+            g.tileset_grid = self.tileset_grid;
+        }
+        // everything is dirty on first attach
+        for cp in self.store.chunks.keys() {
+            self.store.dirty.insert(*cp);
+        }
+    }
+
+    pub fn gfx_ready(&self) -> bool {
+        self.gfx.is_some()
+    }
+
+    pub fn gfx_resize(&mut self, w: u32, h: u32) {
+        if let Some(g) = &mut self.gfx {
+            g.resize(w, h);
+        }
+    }
+
+    /// Render one frame (also drains document dirt into remesh work).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gfx_frame(
+        &mut self,
+        ex: f32,
+        ey: f32,
+        ez: f32,
+        fx: f32,
+        fy: f32,
+        fz: f32,
+        fov_y: f32,
+        near: f32,
+        far: f32,
+    ) {
+        let Some(g) = &mut self.gfx else { return };
+        g.frame(
+            &mut self.store,
+            &self.offsets,
+            &self.paints,
+            &crate::gfx::CameraParams {
+                eye: [ex, ey, ez],
+                forward: [fx, fy, fz],
+                fov_y,
+                near,
+                far,
+            },
+        );
+    }
+
+    pub fn gfx_set_view(&mut self, sculpted: bool, tint: bool, paint: bool) {
+        if let Some(g) = &mut self.gfx {
+            g.view = crate::gfx::ViewOpts { sculpted, tint, paint };
+            g.invalidate_all();
+            for cp in self.store.chunks.keys() {
+                self.store.dirty.insert(*cp);
+            }
+        }
+    }
+
+    pub fn gfx_set_lod_scale(&mut self, k: f32) {
+        if let Some(g) = &mut self.gfx {
+            g.lod_scale = k.clamp(0.1, 8.0);
+        }
+    }
+
+    pub fn gfx_set_tileset(&mut self, w: u32, h: u32, rgba: &[u8]) {
+        if let Some(g) = &mut self.gfx {
+            g.set_tileset(w, h, rgba);
+        }
+    }
+
+    /// Overlay slots: 0 ghost, 1 selection fill, 2 selection lines,
+    /// 3 constraint lines, 4 brush ring, 5 axes, 6 stamp ghost, 7 player.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gfx_overlay_quads(
+        &mut self,
+        which: usize,
+        quads: &[f32],
+        uvs: &[f32],
+        r: f32,
+        gr: f32,
+        b: f32,
+        a: f32,
+    ) {
+        if let Some(g) = &mut self.gfx {
+            g.set_overlay_quads(which, quads, uvs, [r, gr, b, a]);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn gfx_overlay_lines(
+        &mut self,
+        which: usize,
+        points: &[f32],
+        r: f32,
+        gr: f32,
+        b: f32,
+        a: f32,
+    ) {
+        if let Some(g) = &mut self.gfx {
+            g.set_overlay_lines(which, points, [r, gr, b, a]);
+        }
+    }
+
+    pub fn gfx_overlay_lines_colored(&mut self, which: usize, data: &[f32]) {
+        if let Some(g) = &mut self.gfx {
+            g.set_overlay_lines_colored(which, data);
+        }
+    }
+
+    /// Player body triangles (pos3 + rgba4 per vertex); empty hides it.
+    pub fn gfx_set_player(&mut self, data: &[f32]) {
+        if let Some(g) = &mut self.gfx {
+            g.set_player(data);
+        }
+    }
+
+    /// Corner handles (pos3, pixel size, rgba4 per instance); empty hides.
+    pub fn gfx_set_handles(&mut self, data: &[f32]) {
+        if let Some(g) = &mut self.gfx {
+            g.set_handles(data);
+        }
+    }
+
+    /// [chunks, regions, paintedFaces, pendingRebuilds, drawCalls, lod0..lod4]
+    pub fn gfx_stats(&self) -> Vec<u32> {
+        match &self.gfx {
+            None => vec![0; 10],
+            Some(g) => {
+                let l = g.lod_counts();
+                vec![
+                    g.chunk_count(),
+                    g.region_count(),
+                    g.painted_face_count(),
+                    g.pending(),
+                    g.last_draw_calls,
+                    l[0],
+                    l[1],
+                    l[2],
+                    l[3],
+                    l[4],
+                ]
+            }
+        }
     }
 }

@@ -8,6 +8,8 @@
 //! visibility queries, and serialization. The TypeScript shell is a thin
 //! view/controller on top.
 
+#[cfg(target_arch = "wasm32")]
+pub mod gfx;
 pub mod mesh;
 pub mod ops;
 pub mod physics;

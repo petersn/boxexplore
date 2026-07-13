@@ -1,29 +1,35 @@
-import * as THREE from 'three';
 import type { Frame } from './frame';
-import type { Vec3 } from './vec';
+import { MVec, type Vec3, cross, dot, norm, sub, v3 } from './vec';
+import { type Mat4, lookTo, matMul, perspective, rayDir, transform } from './mat';
 
 const MIN_DIST = 0.5;
 const MAX_DIST = 400;
 
+export const FOV_Y = (60 * Math.PI) / 180;
+export const NEAR = 0.02;
+export const FAR = 4000;
+
 export type CameraMode = 'orbit' | 'fly';
 
+export interface Ray {
+  origin: Vec3;
+  dir: Vec3;
+}
+
 /**
- * Owns the WebGL canvas, camera rig and low-level picking. Two camera modes:
- * `orbit` (CAD-style: pivot around a target point) and `fly` (Minecraft
- * creative-style: free position + mouselook, no pivot). Tool logic lives in
- * the modes; this class is dumb.
+ * Camera rig, frame loop, and pointer→ray math. Rendering itself lives in
+ * the Rust core (gfx.rs) — this class owns no GPU state at all; the editor's
+ * tick hands the camera to `world.gfxFrame` each animation frame. Two camera
+ * modes: `orbit` (CAD-style pivot around a target) and `fly` (Minecraft
+ * creative-style free look).
  */
 export class Viewport {
-  readonly renderer: THREE.WebGLRenderer;
-  readonly scene = new THREE.Scene();
-  readonly camera: THREE.PerspectiveCamera;
-
   mode: CameraMode = 'orbit';
   /** Play mode drives the camera; suspend WASD flying. */
   suspendFly = false;
-  target = new THREE.Vector3(0, 0.5, 0);
+  target = new MVec(0, 0.5, 0);
   /** Camera position — ground truth in fly mode, derived in orbit mode. */
-  position = new THREE.Vector3();
+  position = new MVec();
   yaw = -Math.PI / 4;
   pitch = 0.55;
   dist = 14;
@@ -32,37 +38,31 @@ export class Viewport {
 
   /** Called every frame before render. */
   onTick: ((dt: number) => void) | null = null;
+  /** Called when the canvas backing store resizes (device pixels). */
+  onResize: ((w: number, h: number) => void) | null = null;
 
   private readonly canvas: HTMLCanvasElement;
-  private readonly raycaster = new THREE.Raycaster();
   private held = new Set<string>();
   private cameraDrag: { kind: 'orbit' | 'pan'; lastX: number; lastY: number; moved: number } | null =
     null;
   private lastTime = performance.now();
+  private eye = new MVec();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.scene.background = new THREE.Color(0x15171b);
-    this.camera = new THREE.PerspectiveCamera(60, 1, 0.02, 2000);
-
-    const axes = new THREE.AxesHelper(1.5);
-    (axes.material as THREE.Material).transparent = true;
-    (axes.material as THREE.Material).opacity = 0.7;
-    this.scene.add(axes);
 
     const resize = () => {
       const parent = canvas.parentElement!;
       const w = parent.clientWidth;
       const h = parent.clientHeight;
       if (w === 0 || h === 0) return;
-      this.renderer.setSize(w, h, false);
-      this.camera.aspect = w / h;
-      this.camera.updateProjectionMatrix();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      this.onResize?.(canvas.width, canvas.height);
     };
     new ResizeObserver(resize).observe(canvas.parentElement!);
-    resize();
+    queueMicrotask(resize);
 
     window.addEventListener('keydown', (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -84,8 +84,6 @@ export class Viewport {
       this.lastTime = now;
       this.fly(dt);
       this.onTick?.(dt);
-      this.updateCamera();
-      this.renderer.render(this.scene, this.camera);
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
@@ -105,36 +103,27 @@ export class Viewport {
 
   setCameraMode(mode: CameraMode): void {
     if (mode === this.mode) return;
-    this.updateCamera();
+    this.updateEye();
     if (mode === 'fly') {
-      this.position.copy(this.camera.position);
+      this.position.copy(this.eye);
     } else {
       const f = this.forward();
-      this.target
-        .copy(this.position)
-        .add(new THREE.Vector3(f.x, f.y, f.z).multiplyScalar(this.dist));
+      this.target.copy(this.position).addScaled(f, this.dist);
     }
     this.mode = mode;
   }
 
-  private updateCamera(): void {
+  private updateEye(): void {
     if (this.mode === 'orbit') {
       const d = this.distClamp === null ? this.dist : Math.min(this.dist, this.distClamp);
       const cp = Math.cos(this.pitch);
-      this.camera.position.set(
+      this.eye.set(
         this.target.x + d * cp * Math.cos(this.yaw),
         this.target.y + d * Math.sin(this.pitch),
         this.target.z + d * cp * Math.sin(this.yaw),
       );
-      this.camera.lookAt(this.target);
     } else {
-      this.camera.position.copy(this.position);
-      const f = this.forward();
-      this.camera.lookAt(
-        this.position.x + f.x,
-        this.position.y + f.y,
-        this.position.z + f.z,
-      );
+      this.eye.copy(this.position);
     }
   }
 
@@ -145,13 +134,12 @@ export class Viewport {
         ? (this.held.has('shift') ? 48 : 16) * dt
         : this.dist * (this.held.has('shift') ? 2.4 : 0.8) * dt;
     const f = this.forward();
-    const fwd = new THREE.Vector3(f.x, f.y, f.z);
-    const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
-    const move = new THREE.Vector3();
-    if (this.held.has('w')) move.addScaledVector(fwd, speed);
-    if (this.held.has('s')) move.addScaledVector(fwd, -speed);
-    if (this.held.has('d')) move.addScaledVector(right, speed);
-    if (this.held.has('a')) move.addScaledVector(right, -speed);
+    const right = norm(cross(f, v3(0, 1, 0)));
+    const move = new MVec();
+    if (this.held.has('w')) move.addScaled(f, speed);
+    if (this.held.has('s')) move.addScaled(f, -speed);
+    if (this.held.has('d')) move.addScaled(right, speed);
+    if (this.held.has('a')) move.addScaled(right, -speed);
     if (this.held.has(' ') || this.held.has('e')) move.y += speed;
     if (this.held.has('q')) move.y -= speed;
     if (this.mode === 'fly') this.position.add(move);
@@ -177,11 +165,11 @@ export class Viewport {
       this.yaw += dx * k;
       this.pitch = Math.max(-1.55, Math.min(1.55, this.pitch + dy * k));
     } else {
-      this.camera.updateMatrixWorld();
-      const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0);
-      const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
+      const f = this.forward();
+      const right = norm(cross(f, v3(0, 1, 0)));
+      const up = cross(right, f);
       const k = (this.mode === 'fly' ? 8 : this.dist) * 0.0018;
-      const pan = new THREE.Vector3().addScaledVector(right, -dx * k).addScaledVector(up, dy * k);
+      const pan = new MVec().addScaled(right, -dx * k).addScaled(up, dy * k);
       if (this.mode === 'fly') this.position.add(pan);
       else this.target.add(pan);
     }
@@ -200,9 +188,7 @@ export class Viewport {
 
   zoom(deltaY: number): void {
     if (this.mode === 'fly') {
-      // dolly along the view direction
-      const f = this.forward();
-      this.position.addScaledVector(new THREE.Vector3(f.x, f.y, f.z), -deltaY * 0.02);
+      this.position.addScaled(this.forward(), -deltaY * 0.02);
     } else {
       const f = Math.pow(1.1, deltaY / 100);
       this.dist = Math.max(MIN_DIST, Math.min(MAX_DIST, this.dist * f));
@@ -219,96 +205,86 @@ export class Viewport {
   }
 
   cameraPos(): Vec3 {
-    this.updateCamera();
-    return { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z };
+    this.updateEye();
+    return { x: this.eye.x, y: this.eye.y, z: this.eye.z };
+  }
+
+  private cssSize(): { w: number; h: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    return { w: rect.width || 1, h: rect.height || 1 };
+  }
+
+  aspect(): number {
+    const { w, h } = this.cssSize();
+    return w / h;
+  }
+
+  private viewProj(): Mat4 {
+    this.updateEye();
+    return matMul(
+      perspective(FOV_Y, this.aspect(), NEAR, FAR),
+      lookTo(this.eye, this.forward()),
+    );
   }
 
   // -- picking --------------------------------------------------------------
 
-  private setRayFromEvent(e: PointerEvent): void {
-    const rect = this.canvas.getBoundingClientRect();
-    const ndc = new THREE.Vector2(
-      ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      -((e.clientY - rect.top) / rect.height) * 2 + 1,
-    );
-    this.updateCamera();
-    this.camera.updateMatrixWorld();
-    this.raycaster.setFromCamera(ndc, this.camera);
+  /** The pointer ray in world space, from canvas-space CSS coordinates. */
+  rayAt(x: number, y: number): Ray {
+    const { w, h } = this.cssSize();
+    this.updateEye();
+    return {
+      origin: { x: this.eye.x, y: this.eye.y, z: this.eye.z },
+      dir: rayDir(this.forward(), FOV_Y, this.aspect(), w, h, x, y),
+    };
   }
 
-  pickObject(e: PointerEvent, object: THREE.Object3D): THREE.Intersection | null {
-    this.setRayFromEvent(e);
-    const hits = this.raycaster.intersectObject(object, false);
-    return hits.length ? hits[0] : null;
-  }
-
-  /** Nearest intersection among a group's direct children (chunk meshes). */
-  pickGroup(e: PointerEvent, group: THREE.Object3D): THREE.Intersection | null {
-    this.setRayFromEvent(e);
-    const hits = this.raycaster.intersectObjects(group.children, false);
-    return hits.length ? hits[0] : null;
-  }
-
-  /** Like pickGroup, but from canvas-space coordinates (for sweep interpolation). */
-  pickGroupAt(x: number, y: number, group: THREE.Object3D): THREE.Intersection | null {
-    const rect = this.canvas.getBoundingClientRect();
-    const ndc = new THREE.Vector2((x / rect.width) * 2 - 1, -(y / rect.height) * 2 + 1);
-    this.updateCamera();
-    this.camera.updateMatrixWorld();
-    this.raycaster.setFromCamera(ndc, this.camera);
-    const hits = this.raycaster.intersectObjects(group.children, false);
-    return hits.length ? hits[0] : null;
+  rayFromEvent(e: PointerEvent): Ray {
+    const p = this.eventPoint(e);
+    return this.rayAt(p.x, p.y);
   }
 
   /** Intersect the pointer ray with a working-plane frame. */
   pickFrame(e: PointerEvent, frame: Frame): Vec3 | null {
-    this.setRayFromEvent(e);
-    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
-      new THREE.Vector3(frame.n.x, frame.n.y, frame.n.z),
-      new THREE.Vector3(frame.origin.x, frame.origin.y, frame.origin.z),
-    );
-    const out = new THREE.Vector3();
-    if (!this.raycaster.ray.intersectPlane(plane, out)) return null;
-    return { x: out.x, y: out.y, z: out.z };
+    return this.pickPlaneThrough(e, frame.origin, frame.n);
   }
 
-  /** Intersect the pointer ray with an arbitrary plane through `point` with normal `n`. */
+  /** Intersect the pointer ray with the plane through `point` with normal `n`. */
   pickPlaneThrough(e: PointerEvent, point: Vec3, n: Vec3): Vec3 | null {
-    this.setRayFromEvent(e);
-    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
-      new THREE.Vector3(n.x, n.y, n.z),
-      new THREE.Vector3(point.x, point.y, point.z),
-    );
-    const out = new THREE.Vector3();
-    if (!this.raycaster.ray.intersectPlane(plane, out)) return null;
-    return { x: out.x, y: out.y, z: out.z };
+    const ray = this.rayFromEvent(e);
+    const denom = dot(ray.dir, n);
+    if (Math.abs(denom) < 1e-9) return null;
+    const t = dot(sub(point, ray.origin), n) / denom;
+    if (t < 0) return null;
+    return {
+      x: ray.origin.x + ray.dir.x * t,
+      y: ray.origin.y + ray.dir.y * t,
+      z: ray.origin.z + ray.dir.z * t,
+    };
   }
 
   /** Closest point (as scalar t along `dir` from `point`) of the pointer ray to a line. */
   pickLineThrough(e: PointerEvent, point: Vec3, dir: Vec3): number {
-    this.setRayFromEvent(e);
-    const p0 = new THREE.Vector3(point.x, point.y, point.z);
-    const d = new THREE.Vector3(dir.x, dir.y, dir.z).normalize();
-    const ro = this.raycaster.ray.origin;
-    const rd = this.raycaster.ray.direction;
-    // closest point between line (p0, d) and ray (ro, rd)
-    const w0 = new THREE.Vector3().subVectors(p0, ro);
-    const b = d.dot(rd);
+    const ray = this.rayFromEvent(e);
+    const d = norm(dir);
+    const w0 = sub(point, ray.origin);
+    const b = dot(d, ray.dir);
     const denom = 1 - b * b;
     if (Math.abs(denom) < 1e-8) return 0;
-    const dw = d.dot(w0);
-    const rw = rd.dot(w0);
+    const dw = dot(d, w0);
+    const rw = dot(ray.dir, w0);
     return (b * rw - dw) / denom;
   }
 
   /** Project a world point to canvas pixels; null if behind the camera. */
   screenPoint(p: Vec3): { x: number; y: number } | null {
-    this.camera.updateMatrixWorld();
-    const v = new THREE.Vector3(p.x, p.y, p.z).applyMatrix4(this.camera.matrixWorldInverse);
-    if (v.z > -this.camera.near) return null;
-    v.applyMatrix4(this.camera.projectionMatrix);
-    const rect = this.canvas.getBoundingClientRect();
-    return { x: ((v.x + 1) / 2) * rect.width, y: ((1 - v.y) / 2) * rect.height };
+    const clip = transform(this.viewProj(), p);
+    if (clip[3] <= NEAR) return null;
+    const { w, h } = this.cssSize();
+    return {
+      x: ((clip[0] / clip[3] + 1) / 2) * w,
+      y: ((1 - clip[1] / clip[3]) / 2) * h,
+    };
   }
 
   eventPoint(e: PointerEvent): { x: number; y: number } {

@@ -728,3 +728,32 @@ fn player_escapes_undersized_slanted_hole() {
     }
     assert!(escaped, "walked out of the pocket: {:?}", p.pos);
 }
+
+#[test]
+fn pick_hits_the_rendered_surface() {
+    let mut store = ChunkStore::new();
+    let mut offsets = Offsets::default();
+    store.fill_box((0, -1, 0), (4, 0, 4), true); // small floor at y ∈ [-1,0)
+    // ramp a corner up: displaced quad picking must follow the surface
+    offsets.set((2, 0, 2), Some([0.0, 0.5, 0.0]));
+
+    // straight down onto a flat cell: cell (0,-1,0), top face (dir 2)
+    let hit = ops::pick(&store, &offsets, [0.5, 5.0, 0.5], [0.0, -1.0, 0.0], 50.0, true);
+    let (cell, dir, p, _) = hit.expect("hit the floor");
+    assert_eq!((cell, dir), ((0, -1, 0), 2));
+    assert!((p[1] - 0.0).abs() < 1e-3, "hit at the surface: {p:?}");
+
+    // down onto the raised corner: sculpted pick hits the displaced quad HIGH
+    let hit = ops::pick(&store, &offsets, [1.9, 5.0, 1.9], [0.0, -1.0, 0.0], 50.0, true)
+        .expect("hit the ramp");
+    assert!(hit.2[1] > 0.2, "sculpted surface picked above y=0: {:?}", hit.2);
+    // ...while the voxel-view pick sees the flat cube top
+    let hit = ops::pick(&store, &offsets, [1.9, 5.0, 1.9], [0.0, -1.0, 0.0], 50.0, false)
+        .expect("hit voxels");
+    assert!((hit.2[1] - 0.0).abs() < 1e-3, "voxel pick at y=0: {:?}", hit.2);
+
+    // a miss (parallel above the floor) and a long empty-chunk hop
+    assert!(ops::pick(&store, &offsets, [0.0, 5.0, 0.0], [1.0, 0.0, 0.0], 500.0, true).is_none());
+    let far = ops::pick(&store, &offsets, [2.0, 200.0, 2.0], [0.0, -1.0, 0.0], 500.0, true);
+    assert!(far.is_some(), "ray hops empty chunks down to the floor");
+}

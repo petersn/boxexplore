@@ -6,9 +6,11 @@ surfaces with tiles.
 
 ## Running
 
-Requires Node 18+ (Vite 6). The editor core is Rust compiled to WASM; a
-prebuilt module is checked in under `src/wasm/`, so plain `npm run dev` works
-without a Rust toolchain.
+Requires Node 18+ (Vite 6) and a **WebGPU-capable browser** (Chrome/Edge,
+Firefox, or Safari 18.2+ — rendering is wgpu-on-WebGPU with no WebGL
+fallback). The editor core is Rust compiled to WASM; a prebuilt module is
+checked in under `src/wasm/`, so plain `npm run dev` works without a Rust
+toolchain.
 
 ```sh
 npm install
@@ -118,10 +120,12 @@ The document and all heavy lifting live in **Rust → WASM** (`rust/boxcore`):
 a chunked voxel store (32³ chunks, Empty/Full/bitmap — a one-level VDB, so a
 1000³ solid cube costs ~14 MiB instead of ~37 GiB), sparse clamped offsets,
 every edit operation with offset hygiene, diff-based undo/redo, per-chunk
-meshing with AO and LOD levels, visibility queries, and serialization.
-TypeScript is the shell: input, camera, overlays, and three.js drawing the
-buffers the core produces. See `docs/representation.md` for the design
-discussion and benchmark numbers.
+meshing with AO, physics, picking — and the renderer itself: **wgpu on
+WebGPU** (no WebGL fallback), with chunk geometry resident on the GPU,
+frustum culling, per-chunk LOD near the camera, and far terrain merged into
+region meshes at coarse LOD so a 2000×2000 world stays a few hundred draw
+calls. TypeScript is the shell: input, camera state, pointer rays, panels.
+See `docs/representation.md` for the storage design and benchmarks.
 
 | file | role |
 | --- | --- |
@@ -129,12 +133,13 @@ discussion and benchmark numbers.
 | `rust/boxcore/src/mesh.rs` | per-chunk surface extraction, AO, LOD meshes |
 | `rust/boxcore/src/ops.rs` | edit ops, hygiene, brushes, paths, visibility, undo |
 | `rust/boxcore/src/physics.rs` | rapier3d query world + character controller |
+| `rust/boxcore/src/gfx.rs` | the wgpu renderer: chunk/region LOD, overlays, culling |
 | `rust/boxcore/src/wasm_api.rs` | the `World` facade the shell talks to |
 | `src/world.ts` | typed wrapper + change notification |
-| `src/render.ts` | per-chunk three.js meshes, dirty sync, distance LOD |
+| `src/render.ts` | thin stats/view facade over the core renderer |
 | `src/build.ts` / `src/sculpt.ts` / `src/paint.ts` | the three editor modes (input → core calls) |
 | `src/play.ts` | play-mode shell: input, body mesh, chase camera |
-| `src/viewport.ts` | renderer, orbit/fly camera, ray picking |
+| `src/viewport.ts` | orbit/fly camera state, pointer→ray math, frame loop |
 | `src/tileset.ts` / `src/palette.ts` | tileset canvas + stamp picker |
 | `src/editor.ts` | glue: input routing, overlays, toolbar, persistence |
 

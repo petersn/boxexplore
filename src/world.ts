@@ -3,7 +3,9 @@
 // serialization. This wrapper adds change notification and ergonomic types;
 // regenerate the bindings with `npm run wasm`.
 
-import init, { World } from './wasm/boxcore.js';
+import init, { World, gfx_create } from './wasm/boxcore.js';
+
+export { gfx_create };
 import type { Vec3 } from './vec';
 
 export async function initWasm(): Promise<void> {
@@ -358,6 +360,22 @@ export class WorldHandle {
     const out: LatticeKey[] = [];
     for (let i = 0; i < t.length; i += 3) out.push(latticeKey(t[i], t[i + 1], t[i + 2]));
     return out;
+  }
+
+  /** First face hit by a ray, exact against the rendered quads. */
+  pick(
+    origin: Vec3,
+    dir: Vec3,
+    sculpted: boolean,
+    maxDist = 2000,
+  ): { face: FaceRef; point: Vec3; t: number } | null {
+    const v = this.raw.pick(origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, maxDist, sculpted);
+    if (v.length < 8) return null;
+    return {
+      face: { cell: [v[0], v[1], v[2]], dir: v[3] },
+      point: { x: v[4], y: v[5], z: v[6] },
+      t: v[7],
+    };
   }
 
   // -- play mode (physics lives in Rust; none of these touch the document) ----------

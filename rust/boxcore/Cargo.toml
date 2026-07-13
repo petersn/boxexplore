@@ -7,11 +7,18 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-wasm-bindgen = "=0.2.120"
+wasm-bindgen = "=0.2.126"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rapier3d = "0.34.0"
+bytemuck = { version = "1.25.1", features = ["derive"] }
+
+# the renderer is WebGPU-only; native builds (tests, bench) skip wgpu entirely
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = "30"
+wasm-bindgen-futures = "0.4.76"
+web-sys = { version = "0.3.103", features = ["HtmlCanvasElement"] }
 
 [profile.release]
 opt-level = 3

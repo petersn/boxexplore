@@ -1,15 +1,14 @@
-import * as THREE from 'three';
 import { BuildMode } from './build';
 import { downloadBinary, idbGet, idbPut, loadScene, serializeScene } from './io';
-import { type Quad, buildOutlineGeometry, buildQuadGeometry, buildTexturedQuadGeometry } from './meshbuilder';
+import { type Quad, quadOutlinePoints, quadsToArray } from './meshbuilder';
 import { PaintMode } from './paint';
 import { PlayController } from './play';
 import { Palette, type Stamp } from './palette';
 import { ChunkRenderer } from './render';
 import { SculptMode, type SculptTool } from './sculpt';
 import { Tileset } from './tileset';
-import type { Vec3 } from './vec';
-import { Viewport } from './viewport';
+import { MVec, type Vec3, srgbHex } from './vec';
+import { FOV_Y, NEAR, FAR, Viewport } from './viewport';
 import type { FaceRef, RectSel, WorldHandle } from './world';
 
 const AUTOSAVE_KEY = 'autosave';
@@ -62,7 +61,7 @@ export class Editor {
   play: PlayController | null = null;
   private savedCamera: {
     mode: 'orbit' | 'fly';
-    target: THREE.Vector3;
+    target: MVec;
     yaw: number;
     pitch: number;
     dist: number;
@@ -82,15 +81,7 @@ export class Editor {
   readonly modes: Record<ModeName, Mode>;
   mode: Mode;
 
-  private ghostMesh: THREE.Mesh;
-  private ghostMat: THREE.MeshBasicMaterial;
-  private selMesh: THREE.Mesh;
-  private selOutline: THREE.LineSegments;
-  private vertPoints: THREE.Points;
-  private constraintLines: THREE.LineSegments;
-  private brushRing: THREE.LineLoop;
-  private stampGhostMesh: THREE.Mesh;
-  private stampGhostMat: THREE.MeshBasicMaterial;
+  private handleSizePx = 9;
   private lastCamKey = '';
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   private fpsEma = 60;
@@ -133,105 +124,23 @@ export class Editor {
     this.viewport = new Viewport(canvas);
     this.viewport.setCameraMode('fly'); // default camera is fly; P toggles orbit
 
-    this.renderer = new ChunkRenderer(this.tileset.texture);
-    this.viewport.scene.add(this.renderer.group);
+    this.renderer = new ChunkRenderer(this.world);
+    this.viewport.onResize = (w, h) => this.world.raw.gfx_resize(w, h);
 
-    this.ghostMat = new THREE.MeshBasicMaterial({
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.55,
-      depthWrite: false,
-    });
-    this.ghostMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.ghostMat);
-    this.ghostMesh.visible = false;
-    this.ghostMesh.frustumCulled = false;
-    this.ghostMesh.renderOrder = 5;
-    this.viewport.scene.add(this.ghostMesh);
-
-    this.selMesh = new THREE.Mesh(
-      new THREE.BufferGeometry(),
-      new THREE.MeshBasicMaterial({
-        color: 0x4da3ff,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.3,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -2,
-        polygonOffsetUnits: -2,
-      }),
-    );
-    this.selMesh.visible = false;
-    this.selMesh.frustumCulled = false;
-    this.selMesh.renderOrder = 6;
-    this.viewport.scene.add(this.selMesh);
-
-    this.selOutline = new THREE.LineSegments(
-      new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ color: 0x7fc1ff }),
-    );
-    this.selOutline.visible = false;
-    this.selOutline.frustumCulled = false;
-    this.selOutline.renderOrder = 7;
-    this.viewport.scene.add(this.selOutline);
-
-    this.vertPoints = new THREE.Points(
-      new THREE.BufferGeometry(),
-      new THREE.PointsMaterial({
-        size: 9,
-        sizeAttenuation: false,
-        vertexColors: true,
-        depthTest: false,
-        transparent: true,
-      }),
-    );
-    this.vertPoints.visible = false;
-    this.vertPoints.frustumCulled = false;
-    this.vertPoints.renderOrder = 8;
-    this.viewport.scene.add(this.vertPoints);
-
-    // blender-style axis/plane constraint widget (sculpt mode)
-    this.constraintLines = new THREE.LineSegments(
-      new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 }),
-    );
-    this.constraintLines.visible = false;
-    this.constraintLines.frustumCulled = false;
-    this.constraintLines.renderOrder = 9;
-    this.viewport.scene.add(this.constraintLines);
-
-    // brush cursor: a unit ring oriented to the surface, scaled to the radius
-    const ringGeo = new THREE.BufferGeometry();
-    const ringPts: number[] = [];
-    for (let i = 0; i < 48; i++) {
-      const a = (i / 48) * Math.PI * 2;
-      ringPts.push(Math.cos(a), Math.sin(a), 0);
+    // axes helper at the origin (overlay slot 5)
+    const axes: number[] = [];
+    const axisCol: Array<[number, number, number]> = [
+      [0.9, 0.2, 0.2],
+      [0.3, 0.8, 0.3],
+      [0.25, 0.45, 0.9],
+    ];
+    for (let a = 0; a < 3; a++) {
+      const d = [0, 0, 0];
+      d[a] = 1.5;
+      const [r, g, b] = axisCol[a];
+      axes.push(0, 0, 0, r, g, b, 0.7, d[0], d[1], d[2], r, g, b, 0.7);
     }
-    ringGeo.setAttribute('position', new THREE.Float32BufferAttribute(ringPts, 3));
-    this.brushRing = new THREE.LineLoop(
-      ringGeo,
-      new THREE.LineBasicMaterial({ color: 0xffe08a, transparent: true, opacity: 0.85, depthTest: false }),
-    );
-    this.brushRing.visible = false;
-    this.brushRing.frustumCulled = false;
-    this.brushRing.renderOrder = 10;
-    this.viewport.scene.add(this.brushRing);
-
-    // textured stamp preview (paint mode)
-    this.stampGhostMat = new THREE.MeshBasicMaterial({
-      map: this.tileset.texture,
-      transparent: true,
-      opacity: 0.85,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -3,
-      polygonOffsetUnits: -3,
-    });
-    this.stampGhostMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.stampGhostMat);
-    this.stampGhostMesh.visible = false;
-    this.stampGhostMesh.frustumCulled = false;
-    this.stampGhostMesh.renderOrder = 5;
-    this.viewport.scene.add(this.stampGhostMesh);
+    this.world.raw.gfx_overlay_lines_colored(5, new Float32Array(axes));
 
     // palette (tileset preview — texturing the volume comes later)
     this.palette = new Palette(document.getElementById('palette') as HTMLCanvasElement, this.tileset);
@@ -247,20 +156,17 @@ export class Editor {
     this.mode = this.modes.build;
 
     this.world.subscribe(() => {
-      this.renderer.sync(this.world);
       (this.modes.sculpt as SculptMode).invalidateVisible();
       this.pruneSelection();
       this.refreshOverlays();
       this.scheduleAutosave();
     });
     this.tileset.subscribe(() => {
-      this.tileset.texture.needsUpdate = true;
       this.el.tileSize.value = String(this.tileset.tileSize);
-      this.world.setTilesetGrid(this.tileset.cols, this.tileset.rows);
-      this.renderer.rebuildAll(this.world);
+      this.uploadTileset();
       this.scheduleAutosave();
     });
-    this.world.setTilesetGrid(this.tileset.cols, this.tileset.rows);
+    this.uploadTileset();
 
     this.bindPointer(canvas);
     this.bindKeys();
@@ -292,8 +198,13 @@ export class Editor {
       tint: this.texView === 'untextured',
       paint: this.texView === 'textured',
     };
-    this.renderer.rebuildAll(this.world);
     this.refreshOverlays();
+  }
+
+  private uploadTileset(): void {
+    const { width, height, data } = this.tileset.rgba();
+    this.world.raw.gfx_set_tileset(width, height, data);
+    this.world.setTilesetGrid(this.tileset.cols, this.tileset.rows);
   }
 
   toggleCameraMode(): void {
@@ -305,7 +216,7 @@ export class Editor {
     if (this.playing) {
       this.playing = false;
       if (this.play) {
-        this.viewport.scene.remove(this.play.group);
+        this.world.raw.gfx_set_player(new Float32Array(0));
         this.play = null;
       }
       this.viewport.suspendFly = false;
@@ -334,7 +245,6 @@ export class Editor {
     this.viewport.suspendFly = true;
     this.playing = true;
     this.play = new PlayController(this.world);
-    this.viewport.scene.add(this.play.group);
     this.play.spawnAt(this.viewport.target.x, this.viewport.target.z);
     this.viewport.dist = 16;
     this.viewport.pitch = Math.max(0.25, this.viewport.pitch);
@@ -376,44 +286,58 @@ export class Editor {
   /** Show a textured preview of what a paint click will place. */
   setStampGhost(preview: { quads: Quad[]; uvs: number[] } | null): void {
     if (!preview || preview.quads.length === 0) {
-      this.stampGhostMesh.visible = false;
+      this.world.raw.gfx_overlay_quads(6, new Float32Array(0), new Float32Array(0), 1, 1, 1, 1);
       return;
     }
-    buildTexturedQuadGeometry(
-      preview.quads,
-      preview.uvs,
-      this.stampGhostMesh.geometry as THREE.BufferGeometry,
+    this.world.raw.gfx_overlay_quads(
+      6,
+      quadsToArray(preview.quads),
+      new Float32Array(preview.uvs),
+      1,
+      1,
+      1,
+      0.85,
     );
-    this.stampGhostMesh.visible = true;
   }
 
   setGhost(quads: Quad[] | null, erase = false): void {
     if (!quads || quads.length === 0) {
-      this.ghostMesh.visible = false;
+      this.world.raw.gfx_overlay_quads(0, new Float32Array(0), new Float32Array(0), 1, 1, 1, 1);
       return;
     }
-    buildQuadGeometry(quads, this.ghostMesh.geometry as THREE.BufferGeometry);
-    this.ghostMat.color.set(erase ? 0xff5566 : 0x9fd0ff);
-    this.ghostMat.opacity = erase ? 0.45 : 0.35;
-    this.ghostMesh.visible = true;
+    const [r, g, b] = srgbHex(erase ? 0xff5566 : 0x9fd0ff);
+    this.world.raw.gfx_overlay_quads(
+      0,
+      quadsToArray(quads),
+      new Float32Array(0),
+      r,
+      g,
+      b,
+      erase ? 0.45 : 0.35,
+    );
   }
 
   refreshOverlays(): void {
+    const gfx = this.world.raw;
+    const none = new Float32Array(0);
     if (this.playing) {
-      this.selMesh.visible = false;
-      this.selOutline.visible = false;
-      this.vertPoints.visible = false;
-      this.constraintLines.visible = false;
+      gfx.gfx_overlay_quads(1, none, none, 1, 1, 1, 1);
+      gfx.gfx_overlay_lines(2, none, 1, 1, 1, 1);
+      gfx.gfx_overlay_lines_colored(3, none);
+      gfx.gfx_set_handles(none);
       return;
     }
     const quads: Quad[] =
       this.mode.name === 'build' ? (this.modes.build as BuildMode).selectionFaces() : [];
     if (quads.length) {
-      buildQuadGeometry(quads, this.selMesh.geometry as THREE.BufferGeometry);
-      buildOutlineGeometry(quads, this.selOutline.geometry as THREE.BufferGeometry);
+      const [r, g, b] = srgbHex(0x4da3ff);
+      gfx.gfx_overlay_quads(1, quadsToArray(quads), none, r, g, b, 0.3);
+      const [lr, lg, lb] = srgbHex(0x7fc1ff);
+      gfx.gfx_overlay_lines(2, quadOutlinePoints(quads), lr, lg, lb, 1);
+    } else {
+      gfx.gfx_overlay_quads(1, none, none, 1, 1, 1, 1);
+      gfx.gfx_overlay_lines(2, none, 1, 1, 1, 1);
     }
-    this.selMesh.visible = quads.length > 0;
-    this.selOutline.visible = quads.length > 0;
 
     this.refreshConstraintWidget();
 
@@ -421,54 +345,65 @@ export class Editor {
     const sculpt = this.modes.sculpt as SculptMode;
     if (this.mode.name === 'sculpt' && sculpt.tool === 'select') {
       const handles = sculpt.visibleHandles();
-      const positions = new Float32Array(handles.length * 3);
-      const colors = new Float32Array(handles.length * 3);
+      const data = new Float32Array(handles.length * 8);
       let cx = 0;
       let cy = 0;
       let cz = 0;
       handles.forEach((h, i) => {
-        positions[i * 3] = h.pos.x;
-        positions[i * 3 + 1] = h.pos.y;
-        positions[i * 3 + 2] = h.pos.z;
+        data[i * 8] = h.pos.x;
+        data[i * 8 + 1] = h.pos.y;
+        data[i * 8 + 2] = h.pos.z;
+        data[i * 8 + 3] = this.handleSizePx;
         cx += h.pos.x;
         cy += h.pos.y;
         cz += h.pos.z;
         if (h.selected) {
-          colors[i * 3] = 1;
-          colors[i * 3 + 1] = 0.65;
-          colors[i * 3 + 2] = 0.25;
+          data.set([1, 0.65, 0.25, 1], i * 8 + 4);
         } else {
-          colors[i * 3] = 0.85;
-          colors[i * 3 + 1] = 0.88;
-          colors[i * 3 + 2] = 0.95;
+          data.set([0.85, 0.88, 0.95, 1], i * 8 + 4);
         }
       });
       this.handleCentroid = handles.length
         ? { x: cx / handles.length, y: cy / handles.length, z: cz / handles.length }
         : null;
-      const geo = this.vertPoints.geometry as THREE.BufferGeometry;
-      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      geo.computeBoundingSphere();
-      this.vertPoints.visible = handles.length > 0;
+      gfx.gfx_set_handles(data);
     } else {
-      this.vertPoints.visible = false;
+      gfx.gfx_set_handles(none);
     }
   }
 
   /** Position/orient the brush cursor ring, or hide it (point = null). */
   setBrushCursor(point: Vec3 | null, normal?: Vec3, radius = 1): void {
     if (!point || !normal) {
-      this.brushRing.visible = false;
+      this.world.raw.gfx_overlay_lines(4, new Float32Array(0), 1, 1, 1, 1);
       return;
     }
-    this.brushRing.position.set(point.x, point.y, point.z);
-    this.brushRing.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 0, 1),
-      new THREE.Vector3(normal.x, normal.y, normal.z),
-    );
-    this.brushRing.scale.setScalar(radius);
-    this.brushRing.visible = true;
+    // ring in the plane perpendicular to the normal
+    const n = normal;
+    const ref = Math.abs(n.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
+    const ux = n.y * ref.z - n.z * ref.y;
+    const uy = n.z * ref.x - n.x * ref.z;
+    const uz = n.x * ref.y - n.y * ref.x;
+    const ul = Math.hypot(ux, uy, uz) || 1;
+    const u = { x: ux / ul, y: uy / ul, z: uz / ul };
+    const v = {
+      x: n.y * u.z - n.z * u.y,
+      y: n.z * u.x - n.x * u.z,
+      z: n.x * u.y - n.y * u.x,
+    };
+    const SEG = 48;
+    const pts: number[] = [];
+    for (let i = 0; i < SEG; i++) {
+      for (const a of [(i / SEG) * Math.PI * 2, (((i + 1) % SEG) / SEG) * Math.PI * 2]) {
+        pts.push(
+          point.x + (u.x * Math.cos(a) + v.x * Math.sin(a)) * radius,
+          point.y + (u.y * Math.cos(a) + v.y * Math.sin(a)) * radius,
+          point.z + (u.z * Math.cos(a) + v.z * Math.sin(a)) * radius,
+        );
+      }
+    }
+    const [r, g, b] = srgbHex(0xffe08a);
+    this.world.raw.gfx_overlay_lines(4, new Float32Array(pts), r, g, b, 0.85);
   }
 
   /** Sync the sculpt-tool buttons with the active tool. */
@@ -485,7 +420,7 @@ export class Editor {
     const c = this.mode.name === 'sculpt' ? vm.constraint : null;
     const centroid = c ? vm.selectionCentroid() : null;
     if (!c || !centroid) {
-      this.constraintLines.visible = false;
+      this.world.raw.gfx_overlay_lines_colored(3, new Float32Array(0));
       return;
     }
     const AXIS_COLORS: Array<[number, number, number]> = [
@@ -494,28 +429,30 @@ export class Editor {
       [0.35, 0.55, 0.95],
     ];
     const axes = c.plane ? [0, 1, 2].filter((a) => a !== c.axis) : [c.axis];
-    const positions: number[] = [];
-    const colors: number[] = [];
+    const data: number[] = [];
     const EXT = 64;
     for (const a of axes) {
       const dir = [0, 0, 0];
       dir[a] = 1;
-      positions.push(
+      const [r, g, b] = AXIS_COLORS[a];
+      data.push(
         centroid.x - dir[0] * EXT,
         centroid.y - dir[1] * EXT,
         centroid.z - dir[2] * EXT,
+        r,
+        g,
+        b,
+        0.85,
         centroid.x + dir[0] * EXT,
         centroid.y + dir[1] * EXT,
         centroid.z + dir[2] * EXT,
+        r,
+        g,
+        b,
+        0.85,
       );
-      const [r, g, b] = AXIS_COLORS[a];
-      colors.push(r, g, b, r, g, b);
     }
-    const geo = this.constraintLines.geometry as THREE.BufferGeometry;
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    geo.computeBoundingSphere();
-    this.constraintLines.visible = true;
+    this.world.raw.gfx_overlay_lines_colored(3, new Float32Array(data));
   }
 
   showSelBox(a: { x: number; y: number }, b: { x: number; y: number }): void {
@@ -534,11 +471,18 @@ export class Editor {
   // -- picking ------------------------------------------------------------------
 
   pickVolFace(e: PointerEvent): { face: FaceRef; point: Vec3 } | null {
-    const hit = this.viewport.pickGroup(e, this.renderer.group);
-    if (!hit || hit.faceIndex == null) return null;
-    const face = this.renderer.faceAt(hit.object, hit.faceIndex);
-    if (!face) return null;
-    return { face, point: { x: hit.point.x, y: hit.point.y, z: hit.point.z } };
+    const ray = this.viewport.rayFromEvent(e);
+    const hit = this.world.pick(ray.origin, ray.dir, this.geomView === 'sculpted');
+    if (!hit) return null;
+    return { face: hit.face, point: hit.point };
+  }
+
+  /** Like pickVolFace, from canvas coordinates (paint sweep interpolation). */
+  pickVolFaceAt(x: number, y: number): { face: FaceRef; point: Vec3 } | null {
+    const ray = this.viewport.rayAt(x, y);
+    const hit = this.world.pick(ray.origin, ray.dir, this.geomView === 'sculpted');
+    if (!hit) return null;
+    return { face: hit.face, point: hit.point };
   }
 
   // -- modes ---------------------------------------------------------------------
@@ -881,11 +825,7 @@ export class Editor {
       const camKey = `${eye.x.toFixed(2)},${eye.y.toFixed(2)},${eye.z.toFixed(2)},${this.viewport.yaw.toFixed(3)},${this.viewport.pitch.toFixed(3)}`;
       if (camKey !== this.lastCamKey) {
         this.lastCamKey = camKey;
-        sculpt.invalidateVisible();
-        this.refreshOverlays();
-      }
-      // shrink the handle dots as you zoom out so they don't wash the view
-      if (this.vertPoints.visible) {
+        // shrink the handle dots as you zoom out so they don't wash the view
         const c = this.handleCentroid;
         const d =
           this.viewport.mode === 'orbit'
@@ -893,10 +833,10 @@ export class Editor {
             : c
               ? Math.hypot(eye.x - c.x, eye.y - c.y, eye.z - c.z)
               : 14;
-        (this.vertPoints.material as THREE.PointsMaterial).size = Math.max(
-          2.5,
-          Math.min(9, 126 / Math.max(d, 1)),
-        );
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        this.handleSizePx = (Math.max(2.5, Math.min(9, 126 / Math.max(d, 1))) / 2) * dpr;
+        sculpt.invalidateVisible();
+        this.refreshOverlays();
       }
     }
 
@@ -905,8 +845,9 @@ export class Editor {
       this.play.update(dt, (k) => this.heldKeys.has(k), this.viewport);
     }
 
-    // distance-based LOD for far chunks
-    this.renderer.updateLod(this.world, new THREE.Vector3(eye.x, eye.y, eye.z));
+    // hand the frame to the Rust renderer (remesh budget + culling + draw)
+    const f = this.viewport.forward();
+    this.world.raw.gfx_frame(eye.x, eye.y, eye.z, f.x, f.y, f.z, FOV_Y, NEAR, FAR);
 
     const parts = [
       `${Math.round(this.fpsEma)} fps`,
@@ -915,7 +856,8 @@ export class Editor {
       `view ${this.geomView}/${this.texView}`,
       `grid ${this.gridStep}`,
       `${this.world.cellCount()} cells`,
-      `${this.renderer.chunkCount()} chunks`,
+      `${this.renderer.chunkCount()}+${this.renderer.regionCount()} meshes`,
+      `${this.renderer.drawCalls()} draws`,
     ];
     const info = this.mode.statusInfo();
     if (info) parts.push(info);

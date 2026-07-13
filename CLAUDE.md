@@ -11,10 +11,14 @@ and benchmark numbers.
   supporting Node 18). Don't bump to Vite 7/8 unless the default node becomes 20.19+
   (nvm has v20.19.6 installed if ever needed).
 - `npm run dev` (port 5173), `npm run build` (tsc + vite), `npm run typecheck`.
-- `npm run wasm` rebuilds the core (cargo + wasm-bindgen CLI, pinned `=0.2.120`
+- `npm run wasm` rebuilds the core (cargo + wasm-bindgen CLI, pinned `=0.2.126`
   to match the installed CLI) into `src/wasm/` (generated, but committed so the
   editor runs without a Rust toolchain). After ANY change under `rust/`, run
   `npm run wasm` or the browser keeps using the stale module.
+- Rendering is wgpu → WebGPU ONLY (no WebGL fallback; three.js is gone).
+  wgpu is a wasm32-target-only dependency, so native `cargo test`/bench
+  never build it; typecheck the renderer with
+  `cargo check --target wasm32-unknown-unknown`.
 
 ## Architecture split (keep it this way)
 
@@ -25,9 +29,19 @@ and benchmark numbers.
   meshing (AO, sculpted/voxel geometry, untextured tint, tile UVs with two
   material groups, LOD levels), visibility, shortest paths, serialization
   (v4: `{cells, shifts, paints}`).
-- **TS owns**: pointer/keyboard interaction, camera, overlays (ghost,
-  selection, handles, constraint widget, brush ring), per-chunk three.js
-  rendering of core-produced buffers (`src/render.ts`), the toolbar/panels.
+- **Rust also owns ALL RENDERING** (`gfx.rs`, wgpu/WebGPU): chunk meshes
+  live as GPU buffers only (never copied to JS), MSAA 4×, frustum culling,
+  per-chunk LOD near the camera, and far chunks MERGED into 4×4×4-chunk
+  region meshes at coarse LOD (a 2000² world ≈ 350 draws, settles in
+  seconds; empty mesh results are cached so buried interiors never
+  re-queue; the rebuild budget counts face-producing work). Picking is
+  `ops::pick` (cell DDA that hops absent chunks + exact ray-vs-quad on the
+  displaced faces, per view).
+- **TS owns**: pointer/keyboard interaction, camera state + pointer→ray math
+  (`src/viewport.ts`, `src/mat.ts`), overlay CONTENT (ghost/selection/
+  handles/ring geometry as flat arrays pushed into the renderer's overlay
+  slots), the toolbar/panels. `src/render.ts` is only a thin stats/view
+  facade over the core renderer.
 - The shell talks to the core ONLY through `src/world.ts` (`WorldHandle`
   wraps the wasm `World`, adds change notification — every mutating call
   must `notify()` so the renderer/autosave react).
@@ -128,7 +142,10 @@ and benchmark numbers.
 - `cargo test` in `rust/boxcore` — parity-critical core behavior.
 - `cargo run --release --bin bench` — representation benchmarks (1000³ cube,
   terrain, brush latency).
-- `node scripts/verify.mjs` with the dev server up — the 85-check end-to-end
-  suite driving the real UI via `window.editor` (world API + modes).
-  Screenshots land in `/tmp/boxexplore-shots`. Always verify interactively,
-  not just tsc: run the suite after ANY behavior-adjacent change.
+- `node scripts/verify.mjs` with the dev server up — the 93-check end-to-end
+  suite driving the real UI via `window.editor` (world API + modes). It
+  launches Chromium with `--enable-unsafe-webgpu` (SwiftShader WebGPU);
+  NOTE: headless WebGPU frames don't reach screenshots — the saved shots
+  are blank; run `headless: false` if you need real pixels. Always verify
+  interactively, not just tsc: run the suite after ANY behavior-adjacent
+  change.
