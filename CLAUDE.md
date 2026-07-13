@@ -60,18 +60,27 @@ and benchmark numbers.
   textured preview via `setStampGhost`),
   random-scatter checkbox, sweep interpolation between pointer events
   (`pickGroupAt`), X/Ctrl/RMB erase, Alt eyedrop; entering paint forces the
-  Textured view. Sculpt tools M/B/F (tool persists across mode switches);
+  Textured view and is the only mode showing the tileset panel. Sculpt
+  tools M/B/F (default Draw, topo checkbox default ON; tool persists
+  across mode switches);
   the Draw brush pushes along a locked X/Y/Z axis (camera-nearer sign) when
   a constraint is active (`stroke_begin` dir override). X/Y/Z blender
-  constraints (Shift = plane), `=`/`-` nudges. Camera: P orbit/fly (fly-down
-  Q, up E/Space — Z is reserved). Views: V sculpted/voxels, T
-  textured/untextured. There is NO reference grid anymore.
+  constraints (Shift = plane), `=`/`-` nudges. Camera: P orbit/fly, default
+  FLY (fly-down Q, up E/Space — Z is reserved). Views: V sculpted/voxels, T
+  textured/untextured (untextured = direction-coded offset colors: axis →
+  channel, normal-map style). There is NO reference grid anymore.
 - Play mode: physics lives in Rust (`boxcore::physics` — rapier3d used as
   a QUERY engine only: per-chunk trimesh colliders synced lazily from
   `store.dirty_phys`, BVH ray/capsule/ball casts; the controller is
   hand-rolled kinematics, never a rigid body). While grounded, vertical
   velocity stays zero — slopes/steps are handled by ground snap + step-up,
-  so climbs never go ballistic. `src/play.ts` is only input → wish dir,
+  so climbs never go ballistic. Robustness is layered: all movement is
+  SWEPT (capsule casts both vertical directions — no tunneling), sweeps
+  use stop_at_penetration=false so light contact never blocks sliding,
+  `Phys::depenetrate` (parry contact query, deepest-first) ejects residual
+  overlap each tick, snaps are bounded (±step up, steep faces never lift),
+  and `rescue_player_if_buried` (wasm_api) climbs to the nearest air
+  column if the voxel store says the body is deep inside solid. `src/play.ts` is only input → wish dir,
   the body mesh, and the chase camera: smoothed focus point (swivel stays
   snappy), boom clamped by a backward spherecast (`viewport.distClamp`).
   Editor suspends fly keys + overlays while playing.

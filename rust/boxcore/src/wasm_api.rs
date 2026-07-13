@@ -626,6 +626,7 @@ impl World {
         self.phys_sync();
         self.player
             .update(&self.phys, dt.clamp(0.0, 0.05), [wish_x, wish_z], jump);
+        self.rescue_player_if_buried();
         vec![
             self.player.pos[0],
             self.player.pos[1],
@@ -633,6 +634,38 @@ impl World {
             self.player.facing,
             if self.player.on_ground { 1.0 } else { 0.0 },
         ]
+    }
+
+    /// Last-resort unstuck: mesh queries can't recover a player buried DEEP
+    /// inside solid volume (a trimesh is hollow — far from any triangle,
+    /// depenetration finds no contact). The voxel store is the ground truth,
+    /// so when the body column reads solid, climb to the nearest air column.
+    fn rescue_player_if_buried(&mut self) {
+        use crate::physics::HEIGHT;
+        let p = self.player.pos;
+        let cx = p[0].floor() as i32;
+        let cz = p[2].floor() as i32;
+        let solid = |store: &ChunkStore, y: f32| store.get((cx, y.floor() as i32, cz));
+        // offsets wobble the surface ±0.5, so demand the whole body column is
+        // solid before declaring "buried" — never triggers in normal play
+        // (a shallow `embedded` overlap is left to next tick's depenetration)
+        let buried = solid(&self.store, p[1] + 0.5)
+            && solid(&self.store, p[1] + HEIGHT * 0.5)
+            && solid(&self.store, p[1] + HEIGHT - 0.5);
+        if !buried {
+            return;
+        }
+        let body_cells = HEIGHT.ceil() as i32 + 1;
+        let mut y = p[1].floor() as i32;
+        for _ in 0..256 {
+            y += 1;
+            if (0..body_cells).all(|k| !self.store.get((cx, y + k, cz))) {
+                self.player.pos[1] = y as f32 + 0.01;
+                self.player.vel = [0.0; 3];
+                self.player.embedded = false;
+                return;
+            }
+        }
     }
 
     /// How far the chase camera can pull back before hitting geometry.

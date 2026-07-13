@@ -25,7 +25,7 @@
           </label>
         </span>
         <span class="tb-group">
-          <button id="btn-camera" title="Toggle camera: orbit around a pivot / free fly (P)">Orbit</button>
+          <button id="btn-camera" title="Toggle camera: orbit around a pivot / free fly (P)">Fly</button>
           <button id="btn-geom" title="Toggle geometry view: sculpted surface / raw voxels (V)">Sculpted</button>
           <button id="btn-tex" title="Toggle texture view: untextured shows displacement as vertex color (T)">Textured</button>
         </span>
@@ -47,7 +47,7 @@
       </div>
       <div id="main">
         <div id="sidebar">
-          <div class="panel">
+          <div class="panel" id="tileset-panel" hidden>
             <div class="panel-title">Tileset</div>
             <div id="palette-wrap"><canvas id="palette"></canvas></div>
             <div class="row">
@@ -59,9 +59,9 @@
           <div class="panel" id="sculpt-panel" hidden>
             <div class="panel-title">Sculpt</div>
             <div class="row" id="tool-buttons">
-              <button data-tool="select" class="active" title="Select/move corners (M)">Select</button>
+              <button data-tool="select" title="Select/move corners (M)">Select</button>
               <button data-tool="smooth" title="Smooth brush — rounds edges, fills crevices (B)">Smooth</button>
-              <button data-tool="draw" title="Draw brush — push surface out, Alt pulls in (F)">Draw</button>
+              <button data-tool="draw" class="active" title="Draw brush — push surface out, Alt pulls in (F)">Draw</button>
             </div>
             <label class="row">Radius
               <input type="range" id="brush-radius" min="0.5" max="8" step="0.1" value="2.5" />
@@ -71,7 +71,7 @@
               <input type="range" id="brush-strength" min="0.05" max="1" step="0.05" value="0.5" />
               <span class="value" id="brush-strength-val">0.50</span>
             </label>
-            <label class="row"><input type="checkbox" id="brush-topo" /> Brushes may add/remove voxels</label>
+            <label class="row"><input type="checkbox" id="brush-topo" checked /> Brushes may add/remove voxels</label>
           </div>
           <div class="panel" id="paint-panel" hidden>
             <div class="panel-title">Paint</div>

@@ -50,6 +50,29 @@ const dragWorld = async (a, b, opts = {}) => {
   await page.mouse.up();
 };
 
+// --- 0. shipping defaults --------------------------------------------------------
+check(
+  'defaults: fly camera, draw tool, topo brushes on',
+  await page.evaluate(
+    () =>
+      window.editor.viewport.mode === 'fly' &&
+      window.editor.modes.sculpt.tool === 'draw' &&
+      window.editor.brush.topo === true,
+  ),
+);
+check(
+  'tileset panel hidden outside paint mode',
+  await page.evaluate(() => document.getElementById('tileset-panel').hidden === true),
+);
+await page.keyboard.press('3');
+check(
+  'tileset panel shows in paint mode',
+  await page.evaluate(() => document.getElementById('tileset-panel').hidden === false),
+);
+await page.keyboard.press('1');
+// the interaction tests below were written against an orbit camera
+await page.evaluate(() => window.editor.viewport.setCameraMode('orbit'));
+
 // --- 1. removed concepts stay removed -----------------------------------------
 check('plane picker UI is gone', (await page.locator('#plane-axis').count()) === 0);
 check('option checkboxes are gone', (await page.locator('#opt-attach').count()) === 0);
@@ -179,6 +202,7 @@ check('O reset undoes', (await shifts()) === rampShiftsBefore, `${await shifts()
 await freshScene();
 await page.locator('#btn-seed').click();
 await page.keyboard.press('2');
+await page.keyboard.press('m'); // select tool (draw is the default now)
 await page.waitForTimeout(150);
 const corner = await screen({ x: 0, y: 0, z: 0 });
 await page.mouse.click(box.x + corner.x, box.y + corner.y);
@@ -569,7 +593,7 @@ await page.screenshot({ path: `${SHOTS}/61-play.png` });
 
 await page.keyboard.press('Escape');
 check(
-  'Esc exits play and restores the camera',
+  'Esc exits play and restores the pre-play camera',
   await page.evaluate(
     () => window.editor.playing === false && window.editor.play === null && window.editor.viewport.mode === 'orbit',
   ),

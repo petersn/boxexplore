@@ -54,7 +54,7 @@ export class Editor {
   /** Texture view: untextured shows displacement magnitude as vertex color. */
   texView: 'textured' | 'untextured' = 'textured';
   /** Spatial brush settings (sculpt mode's Smooth/Draw tools). */
-  brush = { radius: 2.5, strength: 0.5, topo: false };
+  brush = { radius: 2.5, strength: 0.5, topo: true };
   /** Paint brush settings: radius (0 = single face) and random scatter. */
   paintBrush = { radius: 0, scatter: false };
   /** Play mode: run around the world with a third-person character. */
@@ -110,6 +110,7 @@ export class Editor {
     play: document.getElementById('btn-play') as HTMLButtonElement,
     geom: document.getElementById('btn-geom') as HTMLButtonElement,
     tex: document.getElementById('btn-tex') as HTMLButtonElement,
+    tilesetPanel: document.getElementById('tileset-panel') as HTMLDivElement,
     sculptPanel: document.getElementById('sculpt-panel') as HTMLDivElement,
     brushRadius: document.getElementById('brush-radius') as HTMLInputElement,
     brushRadiusVal: document.getElementById('brush-radius-val') as HTMLSpanElement,
@@ -126,6 +127,7 @@ export class Editor {
     this.world = world;
     const canvas = document.getElementById('viewport') as HTMLCanvasElement;
     this.viewport = new Viewport(canvas);
+    this.viewport.setCameraMode('fly'); // default camera is fly; P toggles orbit
 
     this.renderer = new ChunkRenderer(this.tileset.texture);
     this.viewport.scene.add(this.renderer.group);
@@ -550,6 +552,7 @@ export class Editor {
       this.selectedVerts.clear();
       for (const lk of handoff) this.selectedVerts.add(`L:${lk}`);
     }
+    this.el.tilesetPanel.hidden = name !== 'paint';
     this.el.sculptPanel.hidden = name !== 'sculpt';
     this.el.paintPanel.hidden = name !== 'paint';
     document.querySelectorAll<HTMLButtonElement>('#mode-buttons button').forEach((b) => {

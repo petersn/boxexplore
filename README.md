@@ -45,7 +45,8 @@ organic terrain without breaking the seal.
   off the surface are cleaned up so nothing invisible ever wiggles new geometry.
   `Esc` clears; `Tab` hands the rect's corners to sculpt mode; the **+ Voxel**
   toolbar button seeds a cell when the scene is empty.
-- **Sculpt mode (2)** — three tools, switched in the sidebar or with `M`/`B`/`F`:
+- **Sculpt mode (2)** — three tools, switched in the sidebar or with `M`/`B`/`F`
+  (Draw is the default):
   - **Select** (`M`): **click** selects a corner; **click a selected corner
     again** to drag it; dragging from anywhere else box-selects (`Shift` adds);
     `Ctrl/Cmd+click` selects the shortest edge path from the last-picked corner.
@@ -59,8 +60,8 @@ organic terrain without breaking the seal.
     strength) to relax the *actual displaced surface* — hard voxel edges round
     over and crevices fill in even when every offset starts at zero.
   - **Draw brush** (`F`): pushes the surface out along its normal; `Alt` pulls
-    it in. With **"brushes may add/remove voxels"** checked, brushes reshape
-    the volume itself: pushing a corner past the ±½ clamp flips the voxel and
+    it in. With **"brushes may add/remove voxels"** checked (the default),
+    brushes reshape the volume itself: pushing a corner past the ±½ clamp flips the voxel and
     rebases the offset onto the new ring, so strokes grow (or dig away) real
     geometry while the surface stays continuous and watertight.
 
@@ -82,16 +83,20 @@ organic terrain without breaking the seal.
   queries (rays, capsule sweeps, spherecasts) against per-chunk trimesh
   colliders built from the same displaced surface you see, driving a
   hand-rolled kinematic controller — sculpted ramps walk exactly as they
-  look. Drag/wheel orbit the chase camera; its focus point is smoothed while
-  swivel stays snappy, and a backward spherecast keeps it out of geometry.
-  `G`/`Esc` returns to editing.
+  look. Movement is fully swept (no tunneling through steep faces) with an
+  iterative depenetration pass ejecting any residual overlap, so the
+  character stays unstuck and above ground. Drag/wheel orbit the chase
+  camera; its focus point is smoothed while swivel stays snappy, and a
+  backward spherecast keeps it out of geometry. `G`/`Esc` returns to
+  editing.
 
 The camera has two modes (`P` toggles): **orbit** (CAD-style pivot) and **fly**
 (Minecraft-creative-style — WASD + mouselook, no pivot). Two independent view
 toggles: `V` switches geometry between **Sculpted** and raw **Voxels**, and `T`
-switches **Textured** (painted tiles) / **Untextured** (displacement magnitude
-as vertex color — orange = pushed far). Previews and overlays follow the
-active views.
+switches **Textured** (painted tiles) / **Untextured** (displaced corners get
+a direction-coded vertex color — each offset axis maps to a channel, so +x is
+salmon, −x teal, +y green, −y purple, +z blue, −z olive; stronger push =
+stronger color). Previews and overlays follow the active views.
 
 Scenes autosave to localStorage and can be saved/loaded as JSON (`Ctrl+S` / `Ctrl+O`);
 the tileset image is embedded in the file. Press `?` in the app for the full

@@ -34,7 +34,7 @@ const AXIS_UNITS: readonly Vec3[] = [v3(1, 0, 0), v3(0, 1, 0), v3(0, 0, 1)];
  */
 export class SculptMode {
   readonly name = 'sculpt';
-  tool: SculptTool = 'select';
+  tool: SculptTool = 'draw';
   constraint: Constraint | null = null;
   private drag: Drag | null = null;
   private lastPicked: LatticeKey | null = null;

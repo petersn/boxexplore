@@ -1,7 +1,8 @@
 //! Per-chunk surface extraction and meshing, a faithful port of the JS
 //! mesher: flat lambert shading from a fixed light, Minecraft-style corner
 //! AO with the AO-aware diagonal flip, optional displacement (sculpted view)
-//! and displacement-magnitude tinting (untextured view).
+//! and displacement tinting (untextured view: hue = push direction,
+//! strength = magnitude).
 
 use crate::store::{unpack_paint, Chunk, ChunkStore, Neighborhood, Offsets, Paints, S};
 use crate::{add_iv, pack, plane_axes, quad_normal, IV, V3, CORNERS, DIRS};
@@ -10,7 +11,10 @@ use rustc_hash::FxHashMap;
 const LIGHT: V3 = [0.372, 0.904, 0.213];
 const VOL_BASE: V3 = [0.78, 0.80, 0.85];
 const AO_CURVE: [f32; 4] = [0.55, 0.72, 0.86, 1.0];
-const SHIFT_TINT: V3 = [1.0, 0.5, 0.12];
+// Untextured view: displaced corners tint toward a direction color — each
+// axis of the offset maps to a channel, normal-map style (0.5 + d/|d|*0.5),
+// so +x is salmon, -x teal, +y green, -y purple, +z blue, -z olive; blend
+// strength follows the magnitude.
 
 #[derive(Default)]
 pub struct ChunkMesh {
@@ -213,6 +217,7 @@ fn emit_face(
     let mut verts = [[0f32; 3]; 4];
     let mut ao = [0u8; 4];
     let mut tint_t = [0f32; 4];
+    let mut tint_dir = [[0.5f32; 3]; 4];
     for k in 0..4 {
         let c = CORNERS[d][k];
         let lat = (cell.0 + c.0, cell.1 + c.1, cell.2 + c.2);
@@ -231,6 +236,11 @@ fn emit_face(
             if let Some(o) = off {
                 let mag = (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt();
                 tint_t[k] = 0.85 * (mag / 0.5).min(1.0);
+                if mag > 1e-6 {
+                    for a in 0..3 {
+                        tint_dir[k][a] = 0.5 + 0.5 * o[a] / mag;
+                    }
+                }
             }
         }
         // Minecraft-style corner AO in the empty layer the face looks into
@@ -272,9 +282,9 @@ fn emit_face(
             let mut b = VOL_BASE[2] * bk;
             let t = tint_t[k];
             if t > 0.0 {
-                r += (SHIFT_TINT[0] - r) * t;
-                g += (SHIFT_TINT[1] - g) * t;
-                b += (SHIFT_TINT[2] - b) * t;
+                r += (tint_dir[k][0] - r) * t;
+                g += (tint_dir[k][1] - g) * t;
+                b += (tint_dir[k][2] - b) * t;
             }
             out.colors.extend_from_slice(&[r, g, b]);
             out.uvs.extend_from_slice(&[0.0, 0.0]);

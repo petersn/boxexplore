@@ -274,6 +274,115 @@ fn character_controller_walks_jumps_and_climbs() {
     assert!(peak > 3.0, "climbed the ramp: peak={}", peak);
 }
 
+fn phys_for(store: &ChunkStore, offsets: &Offsets) -> boxcore::physics::Phys {
+    let paints = Paints::default();
+    let mut phys = boxcore::physics::Phys::new();
+    for cp in store.chunks.keys() {
+        phys.dirty.insert(*cp);
+    }
+    phys.sync(store, offsets, &paints);
+    phys
+}
+
+#[test]
+fn depenetration_ejects_overlapping_capsule() {
+    use boxcore::physics::{HEIGHT, RADIUS};
+    let mut store = ChunkStore::new();
+    let offsets = Offsets::default();
+    store.fill_box((0, -1, -8), (16, 8, 8), true); // a big solid block
+    let phys = phys_for(&store, &offsets);
+    // capsule center shoved 0.4 into the block's -x face (x=0 plane)
+    let half = (HEIGHT - 2.0 * RADIUS) / 2.0;
+    let (c, resolved) = phys.depenetrate([0.4 - RADIUS, 3.0, 0.0], half, RADIUS);
+    assert!(resolved, "depenetration converged");
+    assert!(c[0] <= -RADIUS + 0.02, "pushed back out of the face: x={}", c[0]);
+    // an already-free capsule is untouched
+    let free = [-5.0, 20.0, 0.0];
+    let (c2, ok) = phys.depenetrate(free, half, RADIUS);
+    assert!(ok && c2 == free, "free capsule unchanged");
+}
+
+#[test]
+fn controller_survives_steep_slope_assault() {
+    use boxcore::physics::Player;
+    let mut store = ChunkStore::new();
+    let mut offsets = Offsets::default();
+    store.fill_box((-12, -1, -12), (12, 0, 12), true); // floor at y=0
+    // a tall steep prow: 5-high wall whose face leans out ~79° (unwalkable)
+    store.fill_box((4, 0, -6), (8, 5, 6), true);
+    for z in -6..=6 {
+        offsets.set((4, 0, z), Some([-0.5, 0.0, 0.0]));
+        offsets.set((4, 5, z), Some([0.5, 0.0, 0.0]));
+    }
+    let phys = phys_for(&store, &offsets);
+    let mut p = Player::new();
+    p.spawn_at(&phys, 0.0, 0.0);
+    // charge the slope with jump mashing for 10 seconds
+    for i in 0..600 {
+        p.update(&phys, 1.0 / 60.0, [1.0, 0.0], i % 9 < 2);
+        assert!(
+            p.pos.iter().all(|v| v.is_finite()),
+            "position stays finite: {:?}",
+            p.pos
+        );
+        assert!(p.pos[1] > -0.6, "never falls through the floor: {:?}", p.pos);
+        assert!(p.pos[0] < 5.0, "never passes through the steep wall: {:?}", p.pos);
+    }
+    assert!(!p.embedded, "not stuck inside geometry at the end");
+}
+
+#[test]
+fn controller_fuzz_stays_in_world() {
+    use boxcore::physics::Player;
+    let mut store = ChunkStore::new();
+    let mut offsets = Offsets::default();
+    // a closed arena: bumpy floor, walls all around
+    store.fill_box((-16, -2, -16), (16, 0, 16), true);
+    store.fill_box((-17, -2, -17), (-16, 12, 17), true);
+    store.fill_box((16, -2, -17), (17, 12, 17), true);
+    store.fill_box((-17, -2, -17), (17, 12, -16), true);
+    store.fill_box((-17, -2, 16), (17, 12, 17), true);
+    // scattered pillars and ledges to collide with
+    for k in 0..8 {
+        let x = -12 + k * 3;
+        store.fill_box((x, 0, -12 + k * 2), (x + 2, 1 + (k % 4), -10 + k * 2), true);
+    }
+    // deterministic LCG jitters the floor corners for organic slopes
+    let mut rng: u64 = 0x1234_5678_9ABC_DEF0;
+    let mut rand = move || {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((rng >> 33) as f32 / (1u64 << 31) as f32) - 0.5
+    };
+    for x in -16..16 {
+        for z in -16..16 {
+            offsets.set((x, 0, z), Some([0.0, rand(), 0.0]));
+        }
+    }
+    let phys = phys_for(&store, &offsets);
+    let mut p = Player::new();
+    p.spawn_at(&phys, 0.0, 0.0);
+    // 30 seconds of erratic input driven by the same LCG
+    let mut wish = [1.0f32, 0.0f32];
+    for i in 0..1800 {
+        if i % 23 == 0 {
+            let a = rand() * std::f32::consts::TAU;
+            wish = [a.cos(), a.sin()];
+        }
+        p.update(&phys, 1.0 / 60.0, wish, i % 13 < 3);
+        assert!(p.pos.iter().all(|v| v.is_finite()), "finite at tick {i}");
+        assert!(
+            p.pos[1] > -2.5 && p.pos[1] < 40.0,
+            "stays inside the arena vertically at tick {i}: {:?}",
+            p.pos
+        );
+        assert!(
+            p.pos[0].abs() < 16.5 && p.pos[2].abs() < 16.5,
+            "never escapes the walls at tick {i}: {:?}",
+            p.pos
+        );
+    }
+}
+
 #[test]
 fn camera_clearance_stops_at_walls() {
     use boxcore::physics::Phys;

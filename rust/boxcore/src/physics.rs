@@ -9,7 +9,7 @@ use crate::mesh::{mesh_chunk, MeshOpts};
 use crate::store::{ChunkStore, Offsets, Paints};
 use crate::{IV, V3};
 use rapier3d::math::{Pose, Vector};
-use rapier3d::parry::query::{DefaultQueryDispatcher, ShapeCastOptions};
+use rapier3d::parry::query::{contact, DefaultQueryDispatcher, ShapeCastOptions};
 use rapier3d::parry::shape::{Ball, Capsule};
 use rapier3d::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -130,10 +130,14 @@ impl Phys {
     pub fn cast_ball(&self, center: V3, radius: f32, dir: V3, max: f32) -> Option<(f32, V3)> {
         let shape = Ball::new(radius);
         let pose = Pose::from_translation(vec(center));
+        // stop_at_penetration=false: a sweep that starts in light contact
+        // (wall hug, ground snap) only reports hits that deepen penetration,
+        // so movement out of or along a surface is never spuriously blocked.
+        // Residual overlap is depenetrate()'s job.
         let opts = ShapeCastOptions {
             max_time_of_impact: max,
             target_distance: 0.0,
-            stop_at_penetration: true,
+            stop_at_penetration: false,
             compute_impact_geometry_on_penetration: true,
         };
         self.qp()
@@ -158,10 +162,14 @@ impl Phys {
     ) -> Option<(f32, V3)> {
         let shape = Capsule::new_y(half_height, radius);
         let pose = Pose::from_translation(vec(center));
+        // stop_at_penetration=false: a sweep that starts in light contact
+        // (wall hug, ground snap) only reports hits that deepen penetration,
+        // so movement out of or along a surface is never spuriously blocked.
+        // Residual overlap is depenetrate()'s job.
         let opts = ShapeCastOptions {
             max_time_of_impact: max,
             target_distance: 0.0,
-            stop_at_penetration: true,
+            stop_at_penetration: false,
             compute_impact_geometry_on_penetration: true,
         };
         self.qp()
@@ -182,6 +190,68 @@ impl Phys {
             None => dist,
             Some((toi, _)) => toi.max(0.0),
         }
+    }
+
+    /// Chunk colliders whose 32³ cell range can overlap the given AABB.
+    fn handles_near(&self, lo: V3, hi: V3) -> Vec<ColliderHandle> {
+        let c0 = (
+            (lo[0].floor() as i32) >> 5,
+            (lo[1].floor() as i32) >> 5,
+            (lo[2].floor() as i32) >> 5,
+        );
+        let c1 = (
+            (hi[0].ceil() as i32) >> 5,
+            (hi[1].ceil() as i32) >> 5,
+            (hi[2].ceil() as i32) >> 5,
+        );
+        let mut out = Vec::new();
+        for x in c0.0..=c1.0 {
+            for y in c0.1..=c1.1 {
+                for z in c0.2..=c1.2 {
+                    if let Some(h) = self.chunk_colliders.get(&(x, y, z)) {
+                        out.push(*h);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Push a y-aligned capsule out of any geometry it penetrates (deepest
+    /// contact first, a few iterations). Returns the corrected center and
+    /// whether all penetration got resolved. This is the safety net that
+    /// keeps the controller recoverable: sweeps prevent tunneling, and any
+    /// residual overlap (snap onto a slope, step-up into a tight spot, an
+    /// edit made under the player) is ejected here instead of accumulating.
+    pub fn depenetrate(&self, center: V3, half_height: f32, radius: f32) -> (V3, bool) {
+        const TOLERANCE: f32 = 0.005;
+        let capsule = Capsule::new_y(half_height, radius);
+        let reach_y = half_height + radius + 0.6;
+        let reach_xz = radius + 0.6;
+        let mut c = center;
+        for _ in 0..4 {
+            let lo = [c[0] - reach_xz, c[1] - reach_y, c[2] - reach_xz];
+            let hi = [c[0] + reach_xz, c[1] + reach_y, c[2] + reach_xz];
+            let pose = Pose::from_translation(vec(c));
+            let mut worst: Option<(f32, V3)> = None;
+            for h in self.handles_near(lo, hi) {
+                let co = &self.colliders[h];
+                if let Ok(Some(ct)) = contact(co.position(), co.shape(), &pose, &capsule, 0.0) {
+                    if ct.dist < -TOLERANCE && worst.is_none_or(|(d, _)| ct.dist < d) {
+                        // normal1 points from the world geometry toward the capsule
+                        worst = Some((ct.dist, v3(ct.normal1)));
+                    }
+                }
+            }
+            match worst {
+                None => return (c, true),
+                Some((dist, n)) => {
+                    let push = -dist + TOLERANCE;
+                    c = [c[0] + n[0] * push, c[1] + n[1] * push, c[2] + n[2] * push];
+                }
+            }
+        }
+        (c, false)
     }
 }
 
@@ -206,6 +276,9 @@ pub struct Player {
     pub vel: V3,
     pub on_ground: bool,
     pub facing: f32,
+    /// Depenetration failed to fully resolve this tick — the caller should
+    /// try a coarser rescue (the wasm layer scans the voxel store upward).
+    pub embedded: bool,
     coyote: f32,
     jump_held: bool,
     spawn: V3,
@@ -218,6 +291,7 @@ impl Player {
             vel: [0.0; 3],
             on_ground: false,
             facing: 0.0,
+            embedded: false,
             coyote: 0.0,
             jump_held: false,
             spawn: [0.0, 2.0, 0.0],
@@ -308,8 +382,23 @@ impl Player {
         }
     }
 
+    fn capsule_center(&self) -> V3 {
+        [self.pos[0], self.pos[1] + HEIGHT / 2.0, self.pos[2]]
+    }
+
+    const HALF: f32 = (HEIGHT - 2.0 * RADIUS) / 2.0;
+
+    /// Resolve any overlap with the world (edits under the player, snap
+    /// residue, sweep skin) before/after moving.
+    fn depenetrate(&mut self, phys: &Phys) {
+        let (c, resolved) = phys.depenetrate(self.capsule_center(), Self::HALF, RADIUS);
+        self.pos = [c[0], c[1] - HEIGHT / 2.0, c[2]];
+        self.embedded = !resolved;
+    }
+
     /// One tick: `wish` is the camera-relative input direction (unit or zero).
     pub fn update(&mut self, phys: &Phys, dt: f32, wish: [f32; 2], jump: bool) {
+        self.depenetrate(phys);
         let ground = self.ground_hit(phys);
         let feet_gap = ground.map_or(f32::INFINITY, |(y, _)| self.pos[1] - y);
         let walkable = ground.is_some_and(|(_, n)| n[1] >= MAX_SLOPE_COS);
@@ -387,35 +476,56 @@ impl Player {
             }
         }
 
-        // vertical: ceiling check going up, ground snap coming down
-        let mut dy = self.vel[1] * dt;
+        // vertical: swept with the full capsule in BOTH directions so fast
+        // falls (or rises) can never tunnel through geometry
+        let dy = self.vel[1] * dt;
         if dy > 0.0 {
-            let top = [self.pos[0], self.pos[1] + HEIGHT - 0.2, self.pos[2]];
-            if let Some((toi, _)) = phys.cast_ball(top, RADIUS * 0.8, [0.0, 1.0, 0.0], dy + 0.2) {
-                dy = (toi - 0.2).max(0.0);
-                self.vel[1] = 0.0;
+            match phys.cast_capsule(self.capsule_center(), Self::HALF, RADIUS, [0.0, 1.0, 0.0], dy + SKIN) {
+                Some((toi, _)) => {
+                    self.pos[1] += (toi - SKIN).max(0.0);
+                    self.vel[1] = 0.0;
+                }
+                None => self.pos[1] += dy,
+            }
+        } else if dy < 0.0 {
+            match phys.cast_capsule(self.capsule_center(), Self::HALF, RADIUS, [0.0, -1.0, 0.0], -dy + SKIN) {
+                Some((toi, n)) => {
+                    self.pos[1] -= (toi - SKIN).max(0.0);
+                    if n[1] >= MAX_SLOPE_COS {
+                        self.vel[1] = 0.0;
+                        self.on_ground = true;
+                    }
+                    // steep surface: keep falling; the slide branch below
+                    // (and depenetration) handle resting against it
+                }
+                None => self.pos[1] += dy,
             }
         }
-        self.pos[1] += dy;
 
         if let Some((gy, n)) = self.ground_hit(phys) {
             if self.vel[1] <= 0.0 {
                 let gap = self.pos[1] - gy;
                 let can_stand = n[1] >= MAX_SLOPE_COS;
                 let snap = if self.on_ground || can_stand { SNAP_DIST } else { 0.02 };
-                if gap <= snap && can_stand {
+                // upward snap is bounded by step height: a rim probe grazing
+                // a high ledge (or a steep face read as "ground") must never
+                // yank the player up onto it
+                if gap <= snap && gap >= -(STEP_HEIGHT + 0.1) && can_stand {
                     self.pos[1] = gy;
                     self.vel[1] = 0.0;
                     self.on_ground = true;
-                } else if gap <= 0.02 && !can_stand {
-                    // too steep: rest against it but slide downhill
-                    self.pos[1] = gy;
+                } else if (-0.05..=0.02).contains(&gap) && !can_stand {
+                    // too steep: slide downhill (no position change — the
+                    // swept fall already stopped at the surface)
                     self.vel[0] += n[0] * GRAVITY * dt * 0.8;
                     self.vel[2] += n[2] * GRAVITY * dt * 0.8;
                     self.vel[1] = self.vel[1].min(-0.5);
                 }
             }
         }
+
+        // final safety: eject any overlap this tick's moves left behind
+        self.depenetrate(phys);
 
         // fell off the world
         if self.pos[1] < -128.0 {
