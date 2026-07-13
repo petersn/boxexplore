@@ -44,7 +44,8 @@ export class SculptMode {
 
   enter(): void {
     this.constraint = null;
-    this.setTool('select');
+    // the active tool persists across mode switches
+    this.ed.updateToolButtons();
     this.ed.refreshOverlays();
   }
 

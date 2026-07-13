@@ -44,7 +44,7 @@ export const world_surface_has_corner: (a: number, b: number, c: number, d: numb
 export const world_take_dirty: (a: number) => [number, number];
 export const world_to_json: (a: number) => [number, number];
 export const world_undo: (a: number) => number;
-export const world_visible_corners: (a: number, b: number, c: number, d: number) => [number, number];
+export const world_visible_corners: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_free: (a: number, b: number, c: number) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;

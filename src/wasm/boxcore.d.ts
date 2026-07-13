@@ -82,7 +82,7 @@ export class World {
     /**
      * Interleaved [lat.x, lat.y, lat.z, pos.x, pos.y, pos.z] per visible corner.
      */
-    visible_corners(ex: number, ey: number, ez: number): Float32Array;
+    visible_corners(ex: number, ey: number, ez: number, max_dist: number): Float32Array;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -132,7 +132,7 @@ export interface InitOutput {
     readonly world_take_dirty: (a: number) => [number, number];
     readonly world_to_json: (a: number) => [number, number];
     readonly world_undo: (a: number) => number;
-    readonly world_visible_corners: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly world_visible_corners: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

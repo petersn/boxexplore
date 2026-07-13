@@ -139,7 +139,7 @@ export class Viewport {
     if (this.held.size === 0) return;
     const speed =
       this.mode === 'fly'
-        ? (this.held.has('shift') ? 26 : 9) * dt
+        ? (this.held.has('shift') ? 48 : 16) * dt
         : this.dist * (this.held.has('shift') ? 2.4 : 0.8) * dt;
     const f = this.forward();
     const fwd = new THREE.Vector3(f.x, f.y, f.z);

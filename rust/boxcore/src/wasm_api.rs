@@ -298,9 +298,9 @@ impl World {
     // -- sculpt ---------------------------------------------------------------------
 
     /// Interleaved [lat.x, lat.y, lat.z, pos.x, pos.y, pos.z] per visible corner.
-    pub fn visible_corners(&self, ex: f32, ey: f32, ez: f32) -> Vec<f32> {
+    pub fn visible_corners(&self, ex: f32, ey: f32, ez: f32, max_dist: f32) -> Vec<f32> {
         let mut out = Vec::new();
-        for (l, pos) in ops::visible_corners(&self.store, &self.offsets, [ex, ey, ez]) {
+        for (l, pos) in ops::visible_corners(&self.store, &self.offsets, [ex, ey, ez], max_dist) {
             out.extend_from_slice(&[l.0 as f32, l.1 as f32, l.2 as f32, pos[0], pos[1], pos[2]]);
         }
         out

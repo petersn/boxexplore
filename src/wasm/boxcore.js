@@ -429,10 +429,11 @@ export class World {
      * @param {number} ex
      * @param {number} ey
      * @param {number} ez
+     * @param {number} max_dist
      * @returns {Float32Array}
      */
-    visible_corners(ex, ey, ez) {
-        const ret = wasm.world_visible_corners(this.__wbg_ptr, ex, ey, ez);
+    visible_corners(ex, ey, ez, max_dist) {
+        const ret = wasm.world_visible_corners(this.__wbg_ptr, ex, ey, ez, max_dist);
         var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;

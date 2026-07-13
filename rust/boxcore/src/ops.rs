@@ -342,10 +342,14 @@ pub fn segment_blocked(store: &ChunkStore, from: V3, to: V3) -> bool {
 /// Corners the camera can actually see: at least one adjacent face turned
 /// toward the eye, plus a clear voxel line of sight to a probe just off the
 /// surface (two probe distances so concave junctions survive grazing rays).
-pub fn visible_corners(store: &ChunkStore, offsets: &Offsets, eye: V3) -> Vec<(IV, V3)> {
+/// Corners beyond `max_dist` are skipped before any expensive work.
+pub fn visible_corners(store: &ChunkStore, offsets: &Offsets, eye: V3, max_dist: f32) -> Vec<(IV, V3)> {
     let mut out = Vec::new();
     for l in all_surface_corners(store) {
         let pos = displaced(offsets, l);
+        if v3_len(v3_sub(pos, eye)) > max_dist {
+            continue;
+        }
         let faces = faces_at_corner(store, l);
         if faces.is_empty() {
             continue;

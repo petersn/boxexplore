@@ -77,6 +77,8 @@ export class Editor {
   private lastGridKey = '';
   private lastCamKey = '';
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private fpsEma = 60;
+  private handleCentroid: Vec3 | null = null;
 
   private el = {
     selbox: document.getElementById('selbox') as HTMLDivElement,
@@ -217,7 +219,7 @@ export class Editor {
     this.bindToolbar();
     this.bindDragDrop();
 
-    this.viewport.onTick = () => this.tick();
+    this.viewport.onTick = (dt) => this.tick(dt);
     this.setMode('build');
     this.restoreAutosave();
   }
@@ -300,14 +302,22 @@ export class Editor {
 
     this.refreshConstraintWidget();
 
-    if (this.mode.name === 'sculpt') {
-      const handles = (this.modes.sculpt as SculptMode).visibleHandles();
+    // corner handles are select-tool chrome — brushes don't need (or pay for) them
+    const sculpt = this.modes.sculpt as SculptMode;
+    if (this.mode.name === 'sculpt' && sculpt.tool === 'select') {
+      const handles = sculpt.visibleHandles();
       const positions = new Float32Array(handles.length * 3);
       const colors = new Float32Array(handles.length * 3);
+      let cx = 0;
+      let cy = 0;
+      let cz = 0;
       handles.forEach((h, i) => {
         positions[i * 3] = h.pos.x;
         positions[i * 3 + 1] = h.pos.y;
         positions[i * 3 + 2] = h.pos.z;
+        cx += h.pos.x;
+        cy += h.pos.y;
+        cz += h.pos.z;
         if (h.selected) {
           colors[i * 3] = 1;
           colors[i * 3 + 1] = 0.65;
@@ -318,6 +328,9 @@ export class Editor {
           colors[i * 3 + 2] = 0.95;
         }
       });
+      this.handleCentroid = handles.length
+        ? { x: cx / handles.length, y: cy / handles.length, z: cz / handles.length }
+        : null;
       const geo = this.vertPoints.geometry as THREE.BufferGeometry;
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -698,7 +711,8 @@ export class Editor {
 
   // -- per-frame ---------------------------------------------------------------------
 
-  private tick(): void {
+  private tick(dt: number): void {
+    if (dt > 0) this.fpsEma = this.fpsEma * 0.95 + (1 / dt) * 0.05;
     // reference grid at y=0, centered where the view meets that plane
     const frame = axisFrame('y', 0);
     const eye = this.viewport.cameraPos();
@@ -721,12 +735,27 @@ export class Editor {
     }
 
     // corner handles are occlusion-filtered, so refresh them as the camera moves
-    if (this.mode.name === 'sculpt') {
+    const sculpt = this.modes.sculpt as SculptMode;
+    if (this.mode.name === 'sculpt' && sculpt.tool === 'select') {
       const camKey = `${eye.x.toFixed(2)},${eye.y.toFixed(2)},${eye.z.toFixed(2)},${this.viewport.yaw.toFixed(3)},${this.viewport.pitch.toFixed(3)}`;
       if (camKey !== this.lastCamKey) {
         this.lastCamKey = camKey;
-        (this.modes.sculpt as SculptMode).invalidateVisible();
+        sculpt.invalidateVisible();
         this.refreshOverlays();
+      }
+      // shrink the handle dots as you zoom out so they don't wash the view
+      if (this.vertPoints.visible) {
+        const c = this.handleCentroid;
+        const d =
+          this.viewport.mode === 'orbit'
+            ? this.viewport.dist
+            : c
+              ? Math.hypot(eye.x - c.x, eye.y - c.y, eye.z - c.z)
+              : 14;
+        (this.vertPoints.material as THREE.PointsMaterial).size = Math.max(
+          2.5,
+          Math.min(9, 126 / Math.max(d, 1)),
+        );
       }
     }
 
@@ -734,6 +763,7 @@ export class Editor {
     this.renderer.updateLod(this.world, new THREE.Vector3(eye.x, eye.y, eye.z));
 
     const parts = [
+      `${Math.round(this.fpsEma)} fps`,
       this.mode.name,
       `cam ${this.viewport.mode}`,
       `view ${this.geomView}/${this.texView}`,

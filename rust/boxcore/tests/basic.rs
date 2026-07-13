@@ -136,7 +136,7 @@ fn visibility_lone_cube_shows_seven_corners() {
     store.fill_box((0, -1, 0), (1, 0, 1), true);
     // default editor camera position
     let eye = [8.44, 8.31, -8.44];
-    let visible = ops::visible_corners(&store, &offsets, eye);
+    let visible = ops::visible_corners(&store, &offsets, eye, f32::INFINITY);
     assert_eq!(ops::all_surface_corners(&store).len(), 8);
     assert_eq!(visible.len(), 7);
 }

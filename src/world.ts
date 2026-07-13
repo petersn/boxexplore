@@ -162,8 +162,8 @@ export class WorldHandle {
 
   // -- sculpt ------------------------------------------------------------------------
 
-  visibleCorners(eye: Vec3): Array<{ lattice: LatticeKey; pos: Vec3 }> {
-    const v = this.raw.visible_corners(eye.x, eye.y, eye.z);
+  visibleCorners(eye: Vec3, maxDist = 150): Array<{ lattice: LatticeKey; pos: Vec3 }> {
+    const v = this.raw.visible_corners(eye.x, eye.y, eye.z, maxDist);
     const out: Array<{ lattice: LatticeKey; pos: Vec3 }> = [];
     for (let i = 0; i < v.length; i += 6) {
       out.push({
