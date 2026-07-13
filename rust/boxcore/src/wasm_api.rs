@@ -18,7 +18,7 @@ use wasm_bindgen::prelude::*;
 ///   u32 n_bits,   n_bits  × (i32 cx, cy, cz; u16 n_runs; n_runs × (u16 len, u64 word))
 ///   u32 n_shifts, n_shifts × (i32 x, y, z; f32 sx, sy, sz)
 ///   u32 n_paints, n_paints × (i32 x, y, z; u8 dir; u32 packed)
-const BIN_MAGIC: &[u8; 4] = b"BXD7";
+const BIN_MAGIC: &[u8; 4] = b"BXD8";
 
 struct Reader<'a> {
     d: &'a [u8],
@@ -55,6 +55,36 @@ fn put_iv(out: &mut Vec<u8>, c: IV) {
     out.extend_from_slice(&c.0.to_le_bytes());
     out.extend_from_slice(&c.1.to_le_bytes());
     out.extend_from_slice(&c.2.to_le_bytes());
+}
+
+fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(b);
+            break;
+        }
+        out.push(b | 0x80);
+    }
+}
+
+impl<'a> Reader<'a> {
+    fn varint(&mut self) -> Option<u64> {
+        let mut v = 0u64;
+        let mut shift = 0;
+        loop {
+            let b = *self.take(1)?.first()?;
+            v |= ((b & 0x7f) as u64) << shift;
+            if b & 0x80 == 0 {
+                return Some(v);
+            }
+            shift += 7;
+            if shift > 63 {
+                return None;
+            }
+        }
+    }
 }
 
 
@@ -602,13 +632,32 @@ impl World {
                 out.extend_from_slice(&w.to_le_bytes());
             }
         }
+        // Shifts: generated terrain sets MILLIONS of (mostly y-only)
+        // offsets — encode sorted keys as varint deltas and store only the
+        // nonzero components (a flags byte), ~7 bytes/entry instead of 24.
         out.extend_from_slice(&(self.offsets.map.len() as u32).to_le_bytes());
-        let mut shifts: Vec<_> = self.offsets.map.iter().collect();
-        shifts.sort_by_key(|(k, _)| **k);
+        let mut shifts: Vec<(u64, [f32; 3])> = self
+            .offsets
+            .map
+            .iter()
+            .map(|(k, v)| (*k as u64, *v))
+            .collect();
+        shifts.sort_by_key(|(k, _)| *k);
+        let mut prev = 0u64;
         for (k, v) in shifts {
-            put_iv(&mut out, unpack(*k));
-            for c in v {
-                out.extend_from_slice(&c.to_le_bytes());
+            put_varint(&mut out, k.wrapping_sub(prev));
+            prev = k;
+            let mut flags = 0u8;
+            for (a, c) in v.iter().enumerate() {
+                if *c != 0.0 {
+                    flags |= 1 << a;
+                }
+            }
+            out.push(flags);
+            for (a, c) in v.iter().enumerate() {
+                if flags & (1 << a) != 0 {
+                    out.extend_from_slice(&c.to_le_bytes());
+                }
             }
         }
         out.extend_from_slice(&(self.paints.map.len() as u32).to_le_bytes());
@@ -658,9 +707,17 @@ impl World {
                 bits.push((cp, words));
             }
             let mut shifts = Vec::new();
+            let mut prev = 0u64;
             for _ in 0..r.u32()? {
-                let l = r.iv()?;
-                shifts.push((l, [r.f32()?, r.f32()?, r.f32()?]));
+                prev = prev.wrapping_add(r.varint()?);
+                let flags = *r.take(1)?.first()?;
+                let mut v = [0.0f32; 3];
+                for (a, c) in v.iter_mut().enumerate() {
+                    if flags & (1 << a) != 0 {
+                        *c = r.f32()?;
+                    }
+                }
+                shifts.push((unpack(prev as i64), v));
             }
             let mut paints = Vec::new();
             for _ in 0..r.u32()? {
@@ -845,6 +902,26 @@ impl World {
         }
     }
 
+    pub fn plan_stroke_begin(&mut self) {
+        if let Some(p) = &mut self.plan {
+            p.stroke_begin();
+        }
+    }
+
+    pub fn plan_stroke_end(&mut self) {
+        if let Some(p) = &mut self.plan {
+            p.stroke_end();
+        }
+    }
+
+    pub fn plan_undo(&mut self) -> bool {
+        self.plan.as_mut().is_some_and(|p| p.undo_op())
+    }
+
+    pub fn plan_redo(&mut self) -> bool {
+        self.plan.as_mut().is_some_and(|p| p.redo_op())
+    }
+
     pub fn plan_brush(&mut self, cx: f32, cy: f32, radius: f32, delta: f32, layer: u32) {
         if let Some(p) = &mut self.plan {
             p.brush(cx, cy, radius, delta, layer);
@@ -891,7 +968,7 @@ impl World {
         self.store.clear();
         self.offsets.map.clear();
         self.paints.map.clear();
-        plan.generate(&mut self.store);
+        plan.generate(&mut self.store, &mut self.offsets);
         self.plan = Some(plan);
         self.history.clear();
         true

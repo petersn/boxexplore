@@ -780,11 +780,31 @@ fn plan_edits_generate_and_roundtrip() {
     assert!(w.plan_generate());
     assert!(w.cell_count() > 0.0);
     let peak = w.plan_sample(32, 32)[0].round() as i32;
-    assert!(w.get_cell(2, peak - 1, 2), "column reaches the hill top");
-    assert!(!w.get_cell(2, peak, 2), "and stops there");
+    assert!(w.get_cell(2, peak - 2, 2), "column reaches the hill top");
+    assert!(!w.get_cell(2, peak + 1, 2), "and stops there");
     assert!(
         !w.get_cell(-126, 0, -126),
         "void corner generated no cells"
+    );
+    // interpolation + surface offsets: the hillside must be SMOOTH — pick
+    // straight down along a slope transect and require sub-cell continuity
+    assert!(w.shift_count() > 1000, "surface offsets set: {}", w.shift_count());
+    assert!(w.max_shift_abs() <= 0.5 + 1e-5);
+    let mut prev = f32::NAN;
+    let mut worst = 0.0f32;
+    for i in 0..60 {
+        let x = 2.0 + i as f32 * 0.5; // out from the hill center, down the slope
+        let v = w.pick(x, 200.0, 2.0, 0.0, -1.0, 0.0, 500.0, true);
+        assert!(v.len() >= 8, "transect hits the surface at x={x}");
+        let y = v[5];
+        if prev.is_finite() {
+            worst = worst.max((y - prev).abs());
+        }
+        prev = y;
+    }
+    assert!(
+        worst < 0.6,
+        "hillside is stair-free (max step {worst} per half-cell)"
     );
 
     // plan survives the binary roundtrip
@@ -794,4 +814,35 @@ fn plan_edits_generate_and_roundtrip() {
     assert_eq!(w2.plan_dims(), vec![64, 64, 4]);
     let s2 = w2.plan_sample(32, 32);
     assert!((s2[0] - s[0]).abs() < 1e-5 && s2[2] == 1.0);
+}
+
+#[test]
+fn plan_undo_is_stroke_scoped_and_separate() {
+    use boxcore::wasm_api::World;
+    let mut w = World::new();
+    w.plan_init(32, 32);
+    let before = w.plan_sample(16, 16)[0];
+    // one stroke = several brush events = ONE undo step
+    w.plan_stroke_begin();
+    w.plan_brush(16.0, 16.0, 6.0, 4.0, 0);
+    w.plan_brush(17.0, 16.0, 6.0, 4.0, 0);
+    w.plan_stroke_end();
+    let raised = w.plan_sample(16, 16)[0];
+    assert!(raised > before + 4.0);
+    // a world edit in between must not interfere with plan history
+    w.seed_voxel();
+    w.undo(); // world undo removes the voxel...
+    assert_eq!(w.cell_count(), 0.0);
+    assert!((w.plan_sample(16, 16)[0] - raised).abs() < 1e-6, "...not the stroke");
+    assert!(w.plan_undo());
+    assert!((w.plan_sample(16, 16)[0] - before).abs() < 1e-6, "plan undo reverts the stroke");
+    assert!(w.plan_redo());
+    assert!((w.plan_sample(16, 16)[0] - raised).abs() < 1e-6);
+    // mask edits undo too
+    w.plan_stroke_begin();
+    w.plan_mask_brush(16.0, 16.0, 4.0, false);
+    w.plan_stroke_end();
+    assert_eq!(w.plan_sample(16, 16)[2], 0.0);
+    assert!(w.plan_undo());
+    assert_eq!(w.plan_sample(16, 16)[2], 1.0);
 }

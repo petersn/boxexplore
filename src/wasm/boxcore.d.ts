@@ -142,6 +142,7 @@ export class World {
     plan_generate(): boolean;
     plan_init(w: number, h: number): void;
     plan_mask_brush(cx: number, cy: number, radius: number, value: boolean): void;
+    plan_redo(): boolean;
     /**
      * One RGBA pixel per plan cell (contour bands, coast, void checker).
      */
@@ -151,6 +152,9 @@ export class World {
      */
     plan_sample(x: number, y: number): Float32Array;
     plan_smooth(cx: number, cy: number, radius: number, strength: number, layer: number): void;
+    plan_stroke_begin(): void;
+    plan_stroke_end(): void;
+    plan_undo(): boolean;
     /**
      * Drop the player onto the ground near (x, z); returns [x, y, z].
      */
@@ -269,9 +273,13 @@ export interface InitOutput {
     readonly world_plan_generate: (a: number) => number;
     readonly world_plan_init: (a: number, b: number, c: number) => void;
     readonly world_plan_mask_brush: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly world_plan_redo: (a: number) => number;
     readonly world_plan_rgba: (a: number, b: number) => [number, number];
     readonly world_plan_sample: (a: number, b: number, c: number) => [number, number];
     readonly world_plan_smooth: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly world_plan_stroke_begin: (a: number) => void;
+    readonly world_plan_stroke_end: (a: number) => void;
+    readonly world_plan_undo: (a: number) => number;
     readonly world_player_spawn: (a: number, b: number, c: number) => [number, number];
     readonly world_player_update: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly world_rect_corners: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];

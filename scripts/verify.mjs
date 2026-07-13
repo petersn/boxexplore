@@ -589,6 +589,28 @@ check(
   'contour map renders one pixel per cell',
   (await page.evaluate(() => window.editor.world.raw.plan_rgba(0).length)) === 64 * 64 * 4,
 );
+// plan undo: stroke-scoped, separate from the world history
+const planUndo = await page.evaluate(() => {
+  const raw = window.editor.world.raw;
+  const before = raw.plan_sample(48, 48)[0];
+  raw.plan_stroke_begin();
+  raw.plan_brush(48, 48, 6, 5, 0);
+  raw.plan_stroke_end();
+  const after = raw.plan_sample(48, 48)[0];
+  window.editor.undo(); // routed to the PLAN history while in plan mode
+  const undone = raw.plan_sample(48, 48)[0];
+  window.editor.redo();
+  const redone = raw.plan_sample(48, 48)[0];
+  window.editor.undo(); // leave the hill undone for the checks below
+  return { before, after, undone, redone };
+});
+check(
+  'plan undo/redo is stroke-scoped and separate',
+  planUndo.after > planUndo.before + 3 &&
+    Math.abs(planUndo.undone - planUndo.before) < 1e-5 &&
+    Math.abs(planUndo.redone - planUndo.after) < 1e-5,
+  JSON.stringify(planUndo),
+);
 page.once('dialog', (d) => d.accept());
 await page.locator('#plan-generate').click();
 await page.waitForTimeout(200);

@@ -6,7 +6,7 @@
 //! GENERATED into real volume geometry (like a shaped Slab).
 
 use crate::mesh::ChunkMesh;
-use crate::store::ChunkStore;
+use crate::store::{ChunkStore, Offsets};
 use crate::{quad_normal, V3};
 
 /// World cells per plan cell.
@@ -22,6 +22,10 @@ pub struct Plan {
     pub top: Vec<f32>,
     pub bottom: Vec<f32>,
     pub mask: Vec<bool>,
+    /// In-flight brush stroke: original (top, bottom, mask) of touched cells.
+    pending: Option<rustc_hash::FxHashMap<usize, (f32, f32, bool)>>,
+    undo: Vec<rustc_hash::FxHashMap<usize, (f32, f32, bool)>>,
+    redo: Vec<rustc_hash::FxHashMap<usize, (f32, f32, bool)>>,
 }
 
 impl Plan {
@@ -33,6 +37,85 @@ impl Plan {
             top: vec![2.0; n],
             bottom: vec![-2.0; n],
             mask: vec![true; n],
+            pending: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+        }
+    }
+
+    /// Contour band spacing adapted to the map's relief: aim for ~12 bands,
+    /// snapped to a power of two (min 1 world unit).
+    fn band_step(&self, field: &[f32]) -> f32 {
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for (i, &v) in field.iter().enumerate() {
+            if self.mask[i] {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+        if !lo.is_finite() || hi - lo < 1e-6 {
+            return 4.0;
+        }
+        let mut step = 1.0f32;
+        while (hi - lo) / step > 12.0 {
+            step *= 2.0;
+        }
+        step
+    }
+
+    #[inline]
+    fn touch(&mut self, i: usize) {
+        if let Some(op) = &mut self.pending {
+            op.entry(i)
+                .or_insert((self.top[i], self.bottom[i], self.mask[i]));
+        }
+    }
+
+    // -- stroke-scoped undo/redo (separate from the world's history) -----------------
+
+    pub fn stroke_begin(&mut self) {
+        self.pending = Some(Default::default());
+    }
+
+    pub fn stroke_end(&mut self) {
+        if let Some(op) = self.pending.take() {
+            if !op.is_empty() {
+                self.undo.push(op);
+                if self.undo.len() > 100 {
+                    self.undo.remove(0);
+                }
+                self.redo.clear();
+            }
+        }
+    }
+
+    fn swap_op(&mut self, op: &mut rustc_hash::FxHashMap<usize, (f32, f32, bool)>) {
+        for (i, v) in op.iter_mut() {
+            std::mem::swap(&mut self.top[*i], &mut v.0);
+            std::mem::swap(&mut self.bottom[*i], &mut v.1);
+            std::mem::swap(&mut self.mask[*i], &mut v.2);
+        }
+    }
+
+    pub fn undo_op(&mut self) -> bool {
+        match self.undo.pop() {
+            None => false,
+            Some(mut op) => {
+                self.swap_op(&mut op);
+                self.redo.push(op);
+                true
+            }
+        }
+    }
+
+    pub fn redo_op(&mut self) -> bool {
+        match self.redo.pop() {
+            None => false,
+            Some(mut op) => {
+                self.swap_op(&mut op);
+                self.undo.push(op);
+                true
+            }
         }
     }
 
@@ -68,6 +151,7 @@ impl Plan {
     /// it is re-clamped to stay MIN_GAP below the top everywhere.
     pub fn brush(&mut self, cx: f32, cy: f32, radius: f32, delta: f32, layer: u32) {
         for (i, wgt) in self.cells_in_radius(cx, cy, radius) {
+            self.touch(i);
             if layer == 0 {
                 self.top[i] += delta * wgt;
             } else {
@@ -86,6 +170,7 @@ impl Plan {
         };
         let cells = self.cells_in_radius(cx, cy, radius);
         for (i, wgt) in cells {
+            self.touch(i);
             let x = i % self.w;
             let y = i / self.w;
             let mut sum = 0.0;
@@ -117,6 +202,7 @@ impl Plan {
     /// Cut cells out of the world (value = false) or restore them.
     pub fn mask_brush(&mut self, cx: f32, cy: f32, radius: f32, value: bool) {
         for (i, _) in self.cells_in_radius(cx, cy, radius) {
+            self.touch(i);
             self.mask[i] = value;
         }
     }
@@ -124,6 +210,7 @@ impl Plan {
     fn clamp_gap(&mut self) {
         for i in 0..self.top.len() {
             if self.bottom[i] > self.top[i] - MIN_GAP {
+                self.touch(i);
                 self.bottom[i] = self.top[i] - MIN_GAP;
             }
         }
@@ -146,8 +233,9 @@ impl Plan {
             lo = -1.0;
             hi = 1.0;
         }
-        // band every 2 world units, colored along a terrain ramp
-        let band_of = |v: f32| (v / 2.0).floor() as i32;
+        // adaptive contour spacing (~12 bands over the map's relief)
+        let step = self.band_step(hmap);
+        let band_of = |v: f32| (v / step).floor() as i32;
         let ramp = |t: f32| -> [f32; 3] {
             // deep green → grass → tan → light gray
             let stops: [[f32; 3]; 5] = [
@@ -181,7 +269,7 @@ impl Plan {
                 let v = hmap[i];
                 let band = band_of(v);
                 // banded color, quantized so bands read as terraces
-                let t = ((band as f32 * 2.0) - lo) / (hi - lo).max(1.0);
+                let t = ((band as f32 * step) - lo) / (hi - lo).max(1.0);
                 let mut c = ramp(t);
                 // contour line where the band changes against any neighbor
                 let mut edge = false;
@@ -273,6 +361,7 @@ impl Plan {
             lo = -1.0;
             hi = 1.0;
         }
+        let step = self.band_step(&self.top);
 
         let mut emit = |m: &mut ChunkMesh, verts: [V3; 4], base: [f32; 3]| {
             let n = quad_normal(&verts);
@@ -331,7 +420,14 @@ impl Plan {
                 let b11 = corner(&self.bottom, gx + 1, gy + 1);
                 let b01 = corner(&self.bottom, gx, gy + 1);
                 let mid = (t00 + t10 + t11 + t01) / 4.0;
-                let color = ramp(((mid / 2.0).floor() * 2.0 - lo) / (hi - lo).max(1.0));
+                let band = (mid / step).floor();
+                let mut color = ramp((band * step - lo) / (hi - lo).max(1.0));
+                // contour line: darken faces whose corners straddle a band
+                let corners_min = t00.min(t10).min(t11).min(t01);
+                let corners_max = t00.max(t10).max(t11).max(t01);
+                if (corners_min / step).floor() != (corners_max / step).floor() {
+                    color = [color[0] * 0.55, color[1] * 0.55, color[2] * 0.55];
+                }
                 // top sheet (facing +y)
                 emit(
                     &mut m,
@@ -413,27 +509,148 @@ impl Plan {
 
     // -- generation ---------------------------------------------------------------------
 
-    /// Build the real volume: every masked plan cell becomes a PLAN_SCALE²
-    /// column of solid cells from round(bottom) to round(top), at least
-    /// MIN_GAP thick, centered on the origin like the Slab tool.
-    pub fn generate(&self, store: &mut ChunkStore) {
+    /// Mask-aware bilinear sample of a height field at world position
+    /// (wx, wz). Heights live at plan-cell centers; void cells drop out and
+    /// the remaining weights renormalize, so the surface stays sane at the
+    /// disc edge.
+    fn sample(&self, field: &[f32], wx: f32, wz: f32) -> f32 {
+        let half_w = (self.w as i32 * PLAN_SCALE) as f32 / 2.0;
+        let half_h = (self.h as i32 * PLAN_SCALE) as f32 / 2.0;
+        let u = (wx + half_w) / PLAN_SCALE as f32 - 0.5;
+        let v = (wz + half_h) / PLAN_SCALE as f32 - 0.5;
+        let x0 = u.floor();
+        let z0 = v.floor();
+        let fx = u - x0;
+        let fz = v - z0;
+        let mut sum = 0.0;
+        let mut wsum = 0.0;
+        for (dx, dz, wgt) in [
+            (0, 0, (1.0 - fx) * (1.0 - fz)),
+            (1, 0, fx * (1.0 - fz)),
+            (0, 1, (1.0 - fx) * fz),
+            (1, 1, fx * fz),
+        ] {
+            let px = x0 as i32 + dx;
+            let pz = z0 as i32 + dz;
+            if px < 0 || pz < 0 || px >= self.w as i32 || pz >= self.h as i32 {
+                continue;
+            }
+            let i = self.idx(px as usize, pz as usize);
+            if self.mask[i] {
+                sum += field[i] * wgt;
+                wsum += wgt;
+            }
+        }
+        if wsum > 1e-6 {
+            sum / wsum
+        } else {
+            0.0
+        }
+    }
+
+    /// Build the real volume from the INTERPOLATED height fields: every
+    /// world-cell column gets its own integer top/bottom (killing the 4×4
+    /// blockiness), and the lattice corners of the top and bottom surfaces
+    /// get y-offsets toward the exact interpolated heights (killing the
+    /// remaining 1-unit stair-steps — where a corner's height falls between
+    /// two neighboring columns' planes, one offsets up and the other down
+    /// and the step wall collapses to nothing).
+    pub fn generate(&self, store: &mut ChunkStore, offsets: &mut Offsets) {
         let half_w = (self.w as i32 * PLAN_SCALE) / 2;
         let half_h = (self.h as i32 * PLAN_SCALE) / 2;
-        for y in 0..self.h {
-            for x in 0..self.w {
-                let i = self.idx(x, y);
-                if !self.mask[i] {
+        let planes = |wx: i32, wz: i32| -> (i32, i32) {
+            let ht = self.sample(&self.top, wx as f32 + 0.5, wz as f32 + 0.5);
+            let hb = self.sample(&self.bottom, wx as f32 + 0.5, wz as f32 + 0.5);
+            let t = ht.round() as i32;
+            (t, (hb.round() as i32).min(t - MIN_GAP as i32))
+        };
+        let masked_world = |wx: i32, wz: i32| -> bool {
+            let px = (wx + half_w).div_euclid(PLAN_SCALE);
+            let pz = (wz + half_h).div_euclid(PLAN_SCALE);
+            px >= 0
+                && pz >= 0
+                && (px as usize) < self.w
+                && (pz as usize) < self.h
+                && self.mask[self.idx(px as usize, pz as usize)]
+        };
+
+        // Tier 1: per 32×32 chunk column, bulk-fill the shared interior in
+        // one call (full 32³ chunks inside collapse to O(1) Full tags).
+        let ccx0 = (-half_w).div_euclid(32);
+        let ccx1 = (self.w as i32 * PLAN_SCALE - half_w - 1).div_euclid(32);
+        let ccz0 = (-half_h).div_euclid(32);
+        let ccz1 = (self.h as i32 * PLAN_SCALE - half_h - 1).div_euclid(32);
+        // The interpolated field is a convex combination of plan-cell
+        // values, so the raw min/max over the chunk's plan cells (plus a
+        // one-cell apron for the interpolation reach) bounds it EXACTLY —
+        // a sampled estimate with a fixed margin left floating slabs on
+        // steep slopes.
+        for ccz in ccz0..=ccz1 {
+            for ccx in ccx0..=ccx1 {
+                let (x0, z0) = (ccx * 32, ccz * 32);
+                let px0 = (x0 + half_w).div_euclid(PLAN_SCALE);
+                let pz0 = (z0 + half_h).div_euclid(PLAN_SCALE);
+                let mut all = true;
+                let mut min_top = f32::INFINITY;
+                let mut max_bot = f32::NEG_INFINITY;
+                for pz in pz0 - 1..=pz0 + 8 {
+                    for px in px0 - 1..=px0 + 8 {
+                        let inside = px >= px0 && px < px0 + 8 && pz >= pz0 && pz < pz0 + 8;
+                        if px < 0 || pz < 0 || px >= self.w as i32 || pz >= self.h as i32 {
+                            if inside {
+                                all = false;
+                            }
+                            continue;
+                        }
+                        let i = self.idx(px as usize, pz as usize);
+                        if !self.mask[i] {
+                            if inside {
+                                all = false;
+                            }
+                            continue;
+                        }
+                        min_top = min_top.min(self.top[i]);
+                        max_bot = max_bot.max(self.bottom[i]);
+                    }
+                }
+                if !all || !min_top.is_finite() {
                     continue;
                 }
-                let y_top = self.top[i].round() as i32;
-                let y_bot = (self.bottom[i].round() as i32).min(y_top - MIN_GAP as i32);
-                let x0 = x as i32 * PLAN_SCALE - half_w;
-                let z0 = y as i32 * PLAN_SCALE - half_h;
-                store.fill_box(
-                    (x0, y_bot, z0),
-                    (x0 + PLAN_SCALE, y_top, z0 + PLAN_SCALE),
-                    true,
-                );
+                // ±1 covers round(); the convex bound covers everything else
+                let core_top = min_top.round() as i32 - 1;
+                let core_bot = max_bot.round() as i32 + 1;
+                if core_top > core_bot {
+                    store.fill_box((x0, core_bot, z0), (x0 + 32, core_top, z0 + 32), true);
+                }
+            }
+        }
+
+        // Tier 2: per world column, fill whatever the core didn't cover and
+        // set the surface offsets from the interpolated heights.
+        for pz in 0..self.h {
+            for px in 0..self.w {
+                if !self.mask[self.idx(px, pz)] {
+                    continue;
+                }
+                for dz in 0..PLAN_SCALE {
+                    for dx in 0..PLAN_SCALE {
+                        let wx = px as i32 * PLAN_SCALE - half_w + dx;
+                        let wz = pz as i32 * PLAN_SCALE - half_h + dz;
+                        let (top, bot) = planes(wx, wz);
+                        store.fill_box((wx, bot, wz), (wx + 1, top, wz + 1), true);
+                        // top/bottom lattice corners follow the smooth field
+                        for (cx, cz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                            let lx = wx + cx;
+                            let lz = wz + cz;
+                            let ht = self.sample(&self.top, lx as f32, lz as f32);
+                            let dt = (ht - top as f32).clamp(-0.5, 0.5);
+                            offsets.set((lx, top, lz), Some([0.0, dt, 0.0]));
+                            let hb = self.sample(&self.bottom, lx as f32, lz as f32);
+                            let db = (hb - bot as f32).clamp(-0.5, 0.5);
+                            offsets.set((lx, bot, lz), Some([0.0, db, 0.0]));
+                        }
+                    }
+                }
             }
         }
     }

@@ -87,6 +87,7 @@ export class Editor {
   private handleSizePx = 9;
   private lastCamKey = '';
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private autosaveDelay = 600;
   private fpsEma = 60;
   private handleCentroid: Vec3 | null = null;
   private heldKeys = new Set<string>();
@@ -269,11 +270,19 @@ export class Editor {
   // -- edits ---------------------------------------------------------------------
 
   undo(): void {
+    if (this.mode.name === 'plan') {
+      (this.modes.plan as PlanMode).undo();
+      return;
+    }
     this.boxSel = null;
     this.world.undo();
   }
 
   redo(): void {
+    if (this.mode.name === 'plan') {
+      (this.modes.plan as PlanMode).redo();
+      return;
+    }
     this.boxSel = null;
     this.world.redo();
   }
@@ -522,10 +531,15 @@ export class Editor {
   private scheduleAutosave(): void {
     if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
     this.autosaveTimer = setTimeout(() => {
-      idbPut(AUTOSAVE_KEY, serializeScene(this)).catch(() => {
+      const t0 = performance.now();
+      const bytes = serializeScene(this);
+      // serialization blocks the frame — big documents back off so editing
+      // stays smooth (a 15 MB world saves every ~2 s instead of every 0.6 s)
+      this.autosaveDelay = Math.min(20000, Math.max(600, (performance.now() - t0) * 25));
+      idbPut(AUTOSAVE_KEY, bytes).catch(() => {
         // storage may be unavailable; skip silently
       });
-    }, 600);
+    }, this.autosaveDelay);
   }
 
   private async restoreAutosave(): Promise<void> {

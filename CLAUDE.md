@@ -75,8 +75,20 @@ and benchmark numbers.
   cells; bottom is clamped ≥ MIN_GAP (2) below top. Split view: left =
   zoomable contour editor (core renders the RGBA), right = live 3D
   preview through the renderer (`gfx_plan_mode`/`gfx_plan_preview`);
-  "Generate world" replaces the volume (clears history, like scene load).
-  The plan serializes with the doc (v7 "BXD7").
+  "Generate world" replaces the volume (clears history, like scene load)
+  from the BILINEARLY INTERPOLATED height fields: per-world-cell columns
+  plus y-offsets on the top/bottom surface lattice corners, so generated
+  terrain is smooth (no 4×4 or 1-cell stair-steps; neighboring columns'
+  corner offsets meet and step walls collapse). The bulk interior fills
+  per chunk column using the CONVEX bound of the plan cells (an estimated
+  margin left floating slabs on steep slopes). Contours are adaptive
+  (~12 bands) in both the 2D map and the 3D preview. The plan has its OWN
+  stroke-scoped undo/redo (Ctrl+Z routes to it while in plan mode). Plan
+  serializes with the doc (v8 "BXD8"; shifts are varint-delta encoded —
+  generated terrain creates millions and 24 B/entry made 60 MB docs).
+  KNOWN artifact: voxel-based LOD terraces smooth offset terrain at the
+  LOD ring (majority downsampling bounds it to ~±1 cell; the real fix is
+  height-aware LOD meshing, queued with the lighting pass).
   Toolbar "Slab" prompts for X/Z/thickness and lays ground centered at the
   origin, top at y=0 (`ops::make_slab`, one undo op; New scene lays 16×16×2).
   Bulk fills are box-recorded in EditOp (`BoxFill` + `prev` overlap cells) and

@@ -74,6 +74,7 @@ export class PlanMode {
       this.canvas.setPointerCapture(e.pointerId);
       if (e.button === 0) {
         this.stroke = true;
+        this.ed.world.raw.plan_stroke_begin();
         this.applyAt(e);
       } else {
         this.panning = true;
@@ -90,7 +91,10 @@ export class PlanMode {
       }
     });
     const up = () => {
-      if (this.stroke) this.ed.world.planTouched();
+      if (this.stroke) {
+        this.ed.world.raw.plan_stroke_end();
+        this.ed.world.planTouched();
+      }
       this.stroke = false;
       this.panning = false;
     };
@@ -167,6 +171,21 @@ export class PlanMode {
     this.zoom = Math.max(0.2, Math.min(cw / w, ch / h) * 0.92);
     this.panX = (cw - w * this.zoom) / 2;
     this.panY = (ch - h * this.zoom) / 2;
+  }
+
+  /** Undo/redo for plan strokes (separate history from the world's). */
+  undo(): void {
+    if (this.ed.world.raw.plan_undo()) this.afterHistory();
+  }
+
+  redo(): void {
+    if (this.ed.world.raw.plan_redo()) this.afterHistory();
+  }
+
+  private afterHistory(): void {
+    this.refresh2d();
+    this.refreshPreview();
+    this.ed.world.planTouched();
   }
 
   /** Pull fresh contour pixels from the core and repaint. */

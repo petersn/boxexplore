@@ -343,14 +343,19 @@ pub fn mesh_chunk_lod(store: &ChunkStore, cp: IV, level: u32) -> ChunkMesh {
     let cidx = |x: i32, y: i32, z: i32| ((x + 1) + (y + 1) * pn + (z + 1) * pn * pn) as usize;
 
     let mut hood = Neighborhood::new(store, cp);
-    // coarse occupancy: 0 = empty, 1 = partially solid, 2 = fully solid
+    // coarse occupancy: 0 = empty, 1 = partially solid, 2 = fully solid.
+    // Mixed blocks count as solid by MAJORITY, not any-solid — any-solid
+    // ceilings the LOD surface up to a full coarse cell above smooth
+    // offset terrain, which reads as ridges at the detail boundary. The
+    // coarsest level keeps any-solid so thin worlds (the disc is only a
+    // few cells thick) don't vanish at extreme distance.
+    let threshold = if level >= 4 { 1 } else { (step * step * step) / 2 };
     let mut coarse = vec![0u8; (pn * pn * pn) as usize];
     for z in -1..=n {
         for y in -1..=n {
             for x in -1..=n {
-                let mut any = false;
-                let mut all = true;
-                'probe: for dz in 0..step {
+                let mut count = 0i32;
+                for dz in 0..step {
                     for dy in 0..step {
                         for dx in 0..step {
                             if hood.get((
@@ -358,22 +363,17 @@ pub fn mesh_chunk_lod(store: &ChunkStore, cp: IV, level: u32) -> ChunkMesh {
                                 base.1 + y * step + dy,
                                 base.2 + z * step + dz,
                             )) {
-                                any = true;
-                            } else {
-                                all = false;
-                            }
-                            if any && !all {
-                                break 'probe;
+                                count += 1;
                             }
                         }
                     }
                 }
-                coarse[cidx(x, y, z)] = if !any {
-                    0
-                } else if all {
+                coarse[cidx(x, y, z)] = if count == step * step * step {
                     2
-                } else {
+                } else if count >= threshold {
                     1
+                } else {
+                    0
                 };
             }
         }

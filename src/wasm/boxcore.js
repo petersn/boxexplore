@@ -600,6 +600,13 @@ export class World {
         wasm.world_plan_mask_brush(this.__wbg_ptr, cx, cy, radius, value);
     }
     /**
+     * @returns {boolean}
+     */
+    plan_redo() {
+        const ret = wasm.world_plan_redo(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * One RGBA pixel per plan cell (contour bands, coast, void checker).
      * @param {number} layer
      * @returns {Uint8Array}
@@ -631,6 +638,19 @@ export class World {
      */
     plan_smooth(cx, cy, radius, strength, layer) {
         wasm.world_plan_smooth(this.__wbg_ptr, cx, cy, radius, strength, layer);
+    }
+    plan_stroke_begin() {
+        wasm.world_plan_stroke_begin(this.__wbg_ptr);
+    }
+    plan_stroke_end() {
+        wasm.world_plan_stroke_end(this.__wbg_ptr);
+    }
+    /**
+     * @returns {boolean}
+     */
+    plan_undo() {
+        const ret = wasm.world_plan_undo(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * Drop the player onto the ground near (x, z); returns [x, y, z].
@@ -1690,22 +1710,22 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, getArrayU8FromWasm0(arg2, arg3), arg4, arg5);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 482, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 483, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h609039506a690efe);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 435, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 436, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h39705e9b39b7acd9);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 435, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 436, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h39705e9b39b7acd9_2);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 435, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 436, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h39705e9b39b7acd9_3);
             return ret;
         },
