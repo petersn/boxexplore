@@ -1,6 +1,7 @@
 import type { Editor } from './editor';
 import type { Frame } from './frame';
 import type { Quad } from './meshbuilder';
+import type { ShiftChange } from './model';
 import { type Vec3, v3 } from './vec';
 import { type Cell, type VolFace, cellKey, planShiftChanges, planeAxes } from './volume';
 
@@ -276,6 +277,19 @@ export class BuildMode {
       case 'Backspace':
         this.extrudeStep(-1);
         return true;
+      case 'o':
+      case 'O': {
+        // reset the offsets of the selected rect's corners (matches sculpt's O)
+        const ed = this.ed;
+        if (!ed.boxSel) return false;
+        const shifts: ShiftChange[] = [];
+        for (const lk of this.selectionLatticeKeys()) {
+          const was = ed.doc.shifts.get(lk);
+          if (was) shifts.push({ key: lk, before: { ...was }, after: null });
+        }
+        if (shifts.length) ed.commit({ shifts });
+        return true;
+      }
       case 'Escape':
         if (this.ed.boxSel) {
           this.ed.boxSel = null;

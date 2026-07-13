@@ -157,6 +157,18 @@ check(
   await page.evaluate(() => !window.editor.doc.shifts.has('9,9,9')),
 );
 
+// --- 8b. O in build mode clears the rect's corner offsets --------------------------------
+await clickWorld({ x: 1.9, y: -0.3, z: 0.5 }); // the extruded ramp cell's +x face
+const rampShiftsBefore = await shifts();
+await page.keyboard.press('o');
+check(
+  'O in build mode clears the rect corner offsets',
+  rampShiftsBefore > 0 && (await shifts()) < rampShiftsBefore,
+  `${rampShiftsBefore} -> ${await shifts()}`,
+);
+await page.keyboard.press('ControlOrMeta+z');
+check('O reset undoes', (await shifts()) === rampShiftsBefore, `${await shifts()} shifts`);
+
 // --- 9. vertex interactions: click selects, second click drags, clamp ±0.5 --------------
 await freshScene();
 await page.locator('#btn-seed').click();
