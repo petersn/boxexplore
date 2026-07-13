@@ -3,6 +3,7 @@ import { BuildMode } from './build';
 import { axisFrame, frameLocal } from './frame';
 import { downloadText, loadScene, serializeScene } from './io';
 import { type Quad, buildOutlineGeometry, buildQuadGeometry } from './meshbuilder';
+import { PaintMode } from './paint';
 import { Palette, type Stamp } from './palette';
 import { ChunkRenderer } from './render';
 import { SculptMode, type SculptTool } from './sculpt';
@@ -14,7 +15,7 @@ import type { FaceRef, RectSel, WorldHandle } from './world';
 const AUTOSAVE_KEY = 'boxexplore.autosave.v1';
 const GRID_STEPS = [1, 0.5, 0.25, 0.125];
 
-type ModeName = 'build' | 'sculpt';
+type ModeName = 'build' | 'sculpt' | 'paint';
 
 interface Mode {
   readonly name: ModeName;
@@ -33,6 +34,8 @@ const MODE_HINTS: Record<ModeName, string> = {
 <b>O</b> reset the rect's corner offsets · <b>Esc</b> clear · <b>+ Voxel</b> (toolbar) seeds a cell when the scene is empty`,
   sculpt: `Tools (left panel): <b>M</b> select · <b>B</b> smooth brush · <b>F</b> draw brush (<b>Alt</b> inverts) — brushes paint over a radius<br>
 Select: <b>click</b> · <b>click again</b> drags · <b>drag</b> box (<b>Shift</b> add) · <b>Ctrl/Cmd+click</b> path · <b>X/Y/Z</b> constrain (<b>Shift</b> plane) · <b>=/−</b> nudge · <b>H/U/J/N/O</b> on selection`,
+  paint: `<b>Click/drag</b> paint the palette stamp onto faces (multi-tile stamps lay a grid-locked pattern)<br>
+<b>Q/E</b> rotate · <b>F/R</b> flip · <b>Alt+click</b> eyedrop · <b>X+drag</b> or <b>RMB</b> erase · geometry edits carry paint along`,
 };
 
 export class Editor {
@@ -54,7 +57,7 @@ export class Editor {
   brush = { radius: 2.5, strength: 0.5, topo: false };
 
   /** Grid snap step is per-mode: sculpt work defaults finer than cell layout. */
-  private gridStepByMode: Record<ModeName, number> = { build: 1, sculpt: 0.5 };
+  private gridStepByMode: Record<ModeName, number> = { build: 1, sculpt: 0.5, paint: 1 };
 
   get gridStep(): number {
     return this.gridStepByMode[this.mode?.name ?? 'build'] ?? 1;
@@ -79,6 +82,7 @@ export class Editor {
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   private fpsEma = 60;
   private handleCentroid: Vec3 | null = null;
+  private heldKeys = new Set<string>();
 
   private el = {
     selbox: document.getElementById('selbox') as HTMLDivElement,
@@ -105,7 +109,7 @@ export class Editor {
     const canvas = document.getElementById('viewport') as HTMLCanvasElement;
     this.viewport = new Viewport(canvas);
 
-    this.renderer = new ChunkRenderer();
+    this.renderer = new ChunkRenderer(this.tileset.texture);
     this.viewport.scene.add(this.renderer.group);
 
     this.ghostMat = new THREE.MeshBasicMaterial({
@@ -198,6 +202,7 @@ export class Editor {
     this.modes = {
       build: new BuildMode(this),
       sculpt: new SculptMode(this),
+      paint: new PaintMode(this),
     };
     this.mode = this.modes.build;
 
@@ -211,8 +216,11 @@ export class Editor {
     this.tileset.subscribe(() => {
       this.tileset.texture.needsUpdate = true;
       this.el.tileSize.value = String(this.tileset.tileSize);
+      this.world.setTilesetGrid(this.tileset.cols, this.tileset.rows);
+      this.renderer.rebuildAll(this.world);
       this.scheduleAutosave();
     });
+    this.world.setTilesetGrid(this.tileset.cols, this.tileset.rows);
 
     this.bindPointer(canvas);
     this.bindKeys();
@@ -242,6 +250,7 @@ export class Editor {
     this.renderer.view = {
       sculpted: this.geomView === 'sculpted',
       tint: this.texView === 'untextured',
+      paint: this.texView === 'textured',
     };
     this.renderer.rebuildAll(this.world);
     this.refreshOverlays();
@@ -526,10 +535,17 @@ export class Editor {
     }, { passive: false });
   }
 
+  keyHeld(k: string): boolean {
+    return this.heldKeys.has(k);
+  }
+
   private bindKeys(): void {
+    window.addEventListener('keyup', (e) => this.heldKeys.delete(e.key.toLowerCase()));
+    window.addEventListener('blur', () => this.heldKeys.clear());
     window.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+      this.heldKeys.add(e.key.toLowerCase());
 
       if (!this.el.help.hidden) {
         if (e.key === 'Escape' || e.key === '?') this.el.help.hidden = true;
@@ -570,9 +586,13 @@ export class Editor {
         case '2':
           this.setMode('sculpt');
           return;
+        case '3':
+          this.setMode('paint');
+          return;
         case 'tab': {
           e.preventDefault();
-          this.setMode(this.mode.name === 'build' ? 'sculpt' : 'build');
+          const order: ModeName[] = ['build', 'sculpt', 'paint'];
+          this.setMode(order[(order.indexOf(this.mode.name) + 1) % order.length]);
           return;
         }
         case '[':

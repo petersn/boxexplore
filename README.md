@@ -71,9 +71,14 @@ magnitude into the vertex colors (orange = pushed far), and will show painted
 tiles on the textured side once face painting lands. Previews and overlays
 follow the active views.
 
-Painting the volume surface with tiles is the next milestone (per-face tile
-assignment applied to the derived geometry); for now it renders flat-shaded with
-per-corner ambient occlusion and cell outlines.
+- **Paint mode (3)** — assign tileset tiles to faces. Click/drag paints the
+  palette stamp (multi-tile stamps lay a pattern locked to the face grid, so
+  dragging fills coherent brickwork); `Q`/`E` rotate the tile, `F`/`R` flip it,
+  `Alt+click` eyedrops, `X+drag` or right-click erases. Paints render in the
+  Textured view, modulated by the same AO/lambert shading, and **follow
+  geometry edits**: extruding a painted wall yields more painted wall, carving
+  into painted ground keeps the paint on the new floor, and buried faces are
+  cleaned up. Unpainted faces stay flat-shaded gray.
 
 Scenes autosave to localStorage and can be saved/loaded as JSON (`Ctrl+S` / `Ctrl+O`);
 the tileset image is embedded in the file. Press `?` in the app for the full
@@ -103,16 +108,14 @@ discussion and benchmark numbers.
 | `src/tileset.ts` / `src/palette.ts` | tileset canvas + picker (texturing comes later) |
 | `src/editor.ts` | glue: input routing, overlays, toolbar, persistence |
 
-The scene format is plain JSON
-(`{ tileSize, tileset: dataURL, doc: { cells, shifts } }`) — the future game
-runtime will consume it directly.
+The scene format is plain JSON (v4:
+`{ tileSize, tileset: dataURL, doc: { cells, shifts, paints } }`) — the future
+game runtime will consume it directly.
 
 ## Roadmap
 
 - Scroll-wheel extrude on the active rect selection
-- Paint the volume surface with tileset tiles (per-cell-face tile assignment,
-  shown by the "Textured" view), with sensible defaults when geometry changes
-  under painted faces
+- Multi-face paint fill (bucket) and rotated multi-tile stamp layout
 - Select/move/copy volume regions; sub-unit cells for fine geometry
 - Prefab objects with live-updating instances
 - Game runtime: player controller, collision from the derived surface, room/chunk streaming

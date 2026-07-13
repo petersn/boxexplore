@@ -4,7 +4,7 @@
 //! optional topology changes (voxel flips with offset rebasing), shortest
 //! path selection, visibility, and diff-based undo/redo.
 
-use crate::store::{clamp_shift, ChunkStore, Offsets};
+use crate::store::{clamp_shift, cpos_of, ChunkStore, Offsets, Paints};
 use crate::{
     add_iv, axis_of, pack, plane_axes, quad_normal, unpack, v3_add, v3_len, v3_norm,
     v3_scale, v3_sub, IV, V3, CORNERS, DIRS,
@@ -21,15 +21,25 @@ pub struct EditOp {
     pub added: Vec<i64>,
     pub removed: Vec<i64>,
     pub shifts: Vec<(i64, Option<V3>, Option<V3>)>, // key, before, after
+    pub paints: Vec<((i64, u8), Option<u32>, Option<u32>)>, // (cell, dir), before, after
 }
 
 impl EditOp {
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && self.shifts.is_empty()
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.shifts.is_empty()
+            && self.paints.is_empty()
     }
 }
 
-pub fn apply_op(store: &mut ChunkStore, offsets: &mut Offsets, op: &EditOp, forward: bool) {
+pub fn apply_op(
+    store: &mut ChunkStore,
+    offsets: &mut Offsets,
+    paints: &mut Paints,
+    op: &EditOp,
+    forward: bool,
+) {
     if forward {
         for k in &op.removed {
             store.set(unpack(*k), false);
@@ -41,6 +51,10 @@ pub fn apply_op(store: &mut ChunkStore, offsets: &mut Offsets, op: &EditOp, forw
             offsets.set(unpack(*k), *after);
             store.mark_lattice_dirty(unpack(*k));
         }
+        for ((ck, d), _, after) in &op.paints {
+            paints.set(*ck, *d, *after);
+            store.dirty.insert(cpos_of(unpack(*ck)));
+        }
     } else {
         for k in &op.added {
             store.set(unpack(*k), false);
@@ -51,6 +65,10 @@ pub fn apply_op(store: &mut ChunkStore, offsets: &mut Offsets, op: &EditOp, forw
         for (k, before, _) in &op.shifts {
             offsets.set(unpack(*k), *before);
             store.mark_lattice_dirty(unpack(*k));
+        }
+        for ((ck, d), before, _) in &op.paints {
+            paints.set(*ck, *d, *before);
+            store.dirty.insert(cpos_of(unpack(*ck)));
         }
     }
 }
@@ -75,22 +93,22 @@ impl History {
         self.redo.clear();
     }
 
-    pub fn undo(&mut self, store: &mut ChunkStore, offsets: &mut Offsets) -> bool {
+    pub fn undo(&mut self, store: &mut ChunkStore, offsets: &mut Offsets, paints: &mut Paints) -> bool {
         match self.undo.pop() {
             None => false,
             Some(op) => {
-                apply_op(store, offsets, &op, false);
+                apply_op(store, offsets, paints, &op, false);
                 self.redo.push(op);
                 true
             }
         }
     }
 
-    pub fn redo(&mut self, store: &mut ChunkStore, offsets: &mut Offsets) -> bool {
+    pub fn redo(&mut self, store: &mut ChunkStore, offsets: &mut Offsets, paints: &mut Paints) -> bool {
         match self.redo.pop() {
             None => false,
             Some(op) => {
-                apply_op(store, offsets, &op, true);
+                apply_op(store, offsets, paints, &op, true);
                 self.undo.push(op);
                 true
             }
@@ -382,17 +400,30 @@ pub fn visible_corners(store: &ChunkStore, offsets: &Offsets, eye: V3, max_dist:
 // Offset hygiene (local, equivalent to the old global sweep)
 // ---------------------------------------------------------------------------
 
-/// Plan offset changes for a cell edit: corners leaving the surface get their
-/// offsets cleared; corners joining it copy the offset from `source_delta`
+/// Whether a face is exposed (its cell solid, the neighbor across it empty).
+fn face_exposed(store: &ChunkStore, cell: IV, d: usize) -> bool {
+    store.get(cell) && !store.get(add_iv(cell, DIRS[d]))
+}
+
+pub type ShiftChanges = Vec<(i64, Option<V3>, Option<V3>)>;
+pub type PaintChanges = Vec<((i64, u8), Option<u32>, Option<u32>)>;
+
+/// Plan offset AND paint changes for a cell edit. Offsets: corners leaving the
+/// surface get cleared; corners joining it copy the offset from `source_delta`
 /// away when that corner was on the old surface (extrusion carries ramps),
-/// and are cleared otherwise. Call BEFORE applying the cell changes.
-pub fn plan_shift_changes(
+/// and are cleared otherwise. Paints get the per-face analog: entries whose
+/// face stops being exposed are cleared (globally), and faces that become
+/// exposed copy the paint from the source face `source_delta` back (extruding
+/// a painted wall yields more painted wall; carving into painted ground keeps
+/// the paint on the new floor). Call BEFORE applying the cell changes.
+pub fn plan_edit_changes(
     store: &mut ChunkStore,
     offsets: &Offsets,
+    paints: &Paints,
     added: &[IV],
     removed: &[IV],
     source_delta: Option<IV>,
-) -> Vec<(i64, Option<V3>, Option<V3>)> {
+) -> (ShiftChanges, PaintChanges) {
     // affected corners = corners of every changed cell
     let mut affected: FxHashSet<i64> = FxHashSet::default();
     for cell in added.iter().chain(removed.iter()) {
@@ -464,6 +495,59 @@ pub fn plan_shift_changes(
             changes.push((*k, before, after));
         }
     }
+    // paints, planned in the same tentative (post-edit) window
+    let mut paint_changes: PaintChanges = Vec::new();
+    // global sweep: clear paints whose face is no longer exposed
+    for ((ck, d), v) in &paints.map {
+        if !face_exposed(store, unpack(*ck), *d as usize) {
+            paint_changes.push(((*ck, *d), Some(*v), None));
+        }
+    }
+    if let Some(sd) = source_delta {
+        // candidate faces = faces of changed cells and their neighbors
+        let mut candidates: FxHashSet<i64> = FxHashSet::default();
+        for cell in added.iter().chain(removed.iter()) {
+            candidates.insert(pack(*cell));
+            for dir in DIRS {
+                candidates.insert(pack(add_iv(*cell, dir)));
+            }
+        }
+        let solid_before = |cell: IV| -> bool {
+            let k = pack(cell);
+            if added_set.contains(&k) {
+                return false;
+            }
+            if removed_set.contains(&k) {
+                return true;
+            }
+            store.get(cell)
+        };
+        for ck in candidates {
+            let cell = unpack(ck);
+            if !store.get(cell) {
+                continue;
+            }
+            for d in 0..6usize {
+                let now_exposed = face_exposed(store, cell, d);
+                let was_exposed = solid_before(cell) && !solid_before(add_iv(cell, DIRS[d]));
+                if !now_exposed || was_exposed {
+                    continue;
+                }
+                let src_cell = (cell.0 + sd.0, cell.1 + sd.1, cell.2 + sd.2);
+                let src_was_exposed =
+                    solid_before(src_cell) && !solid_before(add_iv(src_cell, DIRS[d]));
+                if !src_was_exposed {
+                    continue;
+                }
+                if let Some(p) = paints.get(pack(src_cell), d as u8) {
+                    let before = paints.get(ck, d as u8);
+                    if before != Some(p) {
+                        paint_changes.push(((ck, d as u8), before, Some(p)));
+                    }
+                }
+            }
+        }
+    }
     // revert the tentative cell changes
     for c in added {
         store.set(*c, false);
@@ -471,7 +555,7 @@ pub fn plan_shift_changes(
     for c in removed {
         store.set(*c, true);
     }
-    changes
+    (changes, paint_changes)
 }
 
 /// `on_surface` as it was before the pending edit (store currently holds the
@@ -536,6 +620,7 @@ fn cell_at_layer(sel: &RectSel, a: i32, b: i32, layer: i32) -> IV {
 pub fn extrude_rect(
     store: &mut ChunkStore,
     offsets: &mut Offsets,
+    paints: &mut Paints,
     sel: &RectSel,
     dir: i32,
 ) -> EditOp {
@@ -571,13 +656,21 @@ pub fn extrude_rect(
     } else {
         (Vec::new(), changed.clone())
     };
-    let shifts = plan_shift_changes(store, offsets, &added, &removed, Some((sd[0], sd[1], sd[2])));
+    let (shifts, paint_changes) = plan_edit_changes(
+        store,
+        offsets,
+        paints,
+        &added,
+        &removed,
+        Some((sd[0], sd[1], sd[2])),
+    );
     let op = EditOp {
         added: added.iter().map(|c| pack(*c)).collect(),
         removed: removed.iter().map(|c| pack(*c)).collect(),
         shifts,
+        paints: paint_changes,
     };
-    apply_op(store, offsets, &op, true);
+    apply_op(store, offsets, paints, &op, true);
     op
 }
 
@@ -635,19 +728,20 @@ pub fn rect_lattice_corners(store: &ChunkStore, sel: &RectSel) -> Vec<IV> {
 }
 
 /// Seed a voxel near the origin, stacking upward if occupied.
-pub fn seed_voxel(store: &mut ChunkStore, offsets: &mut Offsets) -> EditOp {
+pub fn seed_voxel(store: &mut ChunkStore, offsets: &mut Offsets, paints: &mut Paints) -> EditOp {
     let mut y = -1;
     while store.get((0, y, 0)) && y < 64 {
         y += 1;
     }
     let cell = (0, y, 0);
-    let shifts = plan_shift_changes(store, offsets, &[cell], &[], None);
+    let (shifts, paint_changes) = plan_edit_changes(store, offsets, paints, &[cell], &[], None);
     let op = EditOp {
         added: vec![pack(cell)],
         removed: vec![],
         shifts,
+        paints: paint_changes,
     };
-    apply_op(store, offsets, &op, true);
+    apply_op(store, offsets, paints, &op, true);
     op
 }
 
@@ -937,8 +1031,9 @@ impl Stroke {
         }
     }
 
-    /// Finish the stroke: clean stranded offsets, produce the single op.
-    pub fn end(mut self, store: &mut ChunkStore, offsets: &mut Offsets) -> EditOp {
+    /// Finish the stroke: clean stranded offsets and orphaned paints, produce
+    /// the single op.
+    pub fn end(mut self, store: &mut ChunkStore, offsets: &mut Offsets, paints: &mut Paints) -> EditOp {
         let stranded: Vec<IV> = offsets
             .keys()
             .filter(|l| !on_surface(store, *l))
@@ -954,7 +1049,21 @@ impl Stroke {
             added: self.cells_added.iter().copied().collect(),
             removed: self.cells_removed.iter().copied().collect(),
             shifts: Vec::new(),
+            paints: Vec::new(),
         };
+        // topology flips can orphan paints — clear them, recorded in the op
+        // (new faces grown by brushing start unpainted; paint them afterward)
+        let orphaned: Vec<((i64, u8), u32)> = paints
+            .map
+            .iter()
+            .filter(|((ck, d), _)| !face_exposed(store, unpack(*ck), *d as usize))
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        for ((ck, d), v) in orphaned {
+            paints.set(ck, d, None);
+            store.dirty.insert(cpos_of(unpack(ck)));
+            op.paints.push(((ck, d), Some(v), None));
+        }
         for (k, before) in self.shifts_before {
             let now = offsets.get_opt(unpack(k));
             let same = match (&before, &now) {
@@ -968,6 +1077,55 @@ impl Stroke {
             };
             if !same {
                 op.shifts.push((k, before, now));
+            }
+        }
+        op
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Paint strokes (per-face tile assignment)
+// ---------------------------------------------------------------------------
+
+/// A paint-mode stroke: paints/erases faces live, records first-touch
+/// snapshots, and commits everything as one op at the end.
+#[derive(Default)]
+pub struct PaintStroke {
+    before: FxHashMap<(i64, u8), Option<u32>>,
+}
+
+impl PaintStroke {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Paint one face (no-op if the face isn't exposed). Returns success.
+    pub fn paint(
+        &mut self,
+        store: &mut ChunkStore,
+        paints: &mut Paints,
+        cell: IV,
+        d: usize,
+        value: Option<u32>,
+    ) -> bool {
+        if !face_exposed(store, cell, d) {
+            return false;
+        }
+        let ck = pack(cell);
+        self.before
+            .entry((ck, d as u8))
+            .or_insert_with(|| paints.get(ck, d as u8));
+        paints.set(ck, d as u8, value);
+        store.dirty.insert(cpos_of(cell));
+        true
+    }
+
+    pub fn end(self, paints: &Paints) -> EditOp {
+        let mut op = EditOp::default();
+        for (key, before) in self.before {
+            let now = paints.get(key.0, key.1);
+            if before != now {
+                op.paints.push((key, before, now));
             }
         }
         op

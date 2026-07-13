@@ -2,19 +2,22 @@
 
 use boxcore::mesh::{boundary_stats, mesh_chunk, MeshOpts};
 use boxcore::ops::{self, BrushTool, RectSel, Stroke};
-use boxcore::store::{ChunkStore, Offsets};
+use boxcore::store::{ChunkStore, Offsets, Paints};
 
 fn opts() -> MeshOpts {
     MeshOpts {
         sculpted: true,
         tint: false,
+        paint: false,
+        grid: (8, 8),
     }
 }
 
 fn total_faces(store: &ChunkStore, offsets: &Offsets) -> usize {
+    let paints = Paints::default();
     let mut n = 0;
     for cp in store.chunks.keys() {
-        n += mesh_chunk(store, offsets, *cp, &opts()).face_count();
+        n += mesh_chunk(store, offsets, &paints, *cp, &opts()).face_count();
     }
     n
 }
@@ -54,6 +57,7 @@ fn big_cube_is_cheap_and_watertight_at_chunk_scale() {
 fn extrude_faces_present_only_and_carve_footprint() {
     let mut store = ChunkStore::new();
     let mut offsets = Offsets::default();
+    let mut paints = Paints::default();
     store.fill_box((0, -1, 0), (1, 0, 1), true); // the seed voxel
 
     // rect on the top plane extending into air: extrude fills only over solid
@@ -66,7 +70,7 @@ fn extrude_faces_present_only_and_carve_footprint() {
         b0: 0,
         b1: 0,
     };
-    let op = ops::extrude_rect(&mut store, &mut offsets, &sel, 1);
+    let op = ops::extrude_rect(&mut store, &mut offsets, &mut paints, &sel, 1);
     assert_eq!(op.added.len(), 1); // only above the seed
     assert!(store.get((0, 0, 0)));
 
@@ -80,7 +84,7 @@ fn extrude_faces_present_only_and_carve_footprint() {
         b0: 0,
         b1: 0,
     };
-    let op2 = ops::extrude_rect(&mut store, &mut offsets, &sel2, -1);
+    let op2 = ops::extrude_rect(&mut store, &mut offsets, &mut paints, &sel2, -1);
     assert_eq!(op2.removed.len(), 1);
     assert!(!store.get((0, 0, 0)));
 }
@@ -89,6 +93,7 @@ fn extrude_faces_present_only_and_carve_footprint() {
 fn extrusion_carries_ramp_and_cleans_stale() {
     let mut store = ChunkStore::new();
     let mut offsets = Offsets::default();
+    let mut paints = Paints::default();
     store.fill_box((0, -1, 0), (1, 0, 1), true);
     offsets.set((1, 0, 0), Some([0.0, -0.5, 0.0]));
     offsets.set((1, 0, 1), Some([0.0, -0.5, 0.0]));
@@ -104,7 +109,7 @@ fn extrusion_carries_ramp_and_cleans_stale() {
         b0: 0,
         b1: 0,
     };
-    let op = ops::extrude_rect(&mut store, &mut offsets, &sel, 1);
+    let op = ops::extrude_rect(&mut store, &mut offsets, &mut paints, &sel, 1);
     assert_eq!(op.added.len(), 1);
     assert!(store.get((1, -1, 0)));
     // the ramp cross-section carried to the new ring
@@ -113,7 +118,7 @@ fn extrusion_carries_ramp_and_cleans_stale() {
     // the stale offset was cleaned up
     assert!(offsets.get_opt((9, 9, 9)).is_none());
     // undo restores everything
-    ops::apply_op(&mut store, &mut offsets, &op, false);
+    ops::apply_op(&mut store, &mut offsets, &mut paints, &op, false);
     assert!(!store.get((1, -1, 0)));
     assert!(offsets.get_opt((2, 0, 0)).is_none());
     assert_eq!(offsets.get((9, 9, 9))[0], 0.3);
@@ -122,6 +127,7 @@ fn extrusion_carries_ramp_and_cleans_stale() {
 #[test]
 fn offsets_hard_clamp() {
     let mut offsets = Offsets::default();
+    let mut paints = Paints::default();
     offsets.set((0, 0, 0), Some([2.0, -3.0, 0.1]));
     let v = offsets.get((0, 0, 0));
     assert_eq!(v, [0.5, -0.5, 0.1]);
@@ -145,6 +151,7 @@ fn visibility_lone_cube_shows_seven_corners() {
 fn draw_brush_with_topology_grows_and_stays_watertight() {
     let mut store = ChunkStore::new();
     let mut offsets = Offsets::default();
+    let mut paints = Paints::default();
     store.fill_box((0, -1, 0), (3, 0, 2), true); // small slab
     let before = store.cell_count();
 
@@ -152,7 +159,7 @@ fn draw_brush_with_topology_grows_and_stays_watertight() {
     for _ in 0..6 {
         stroke.dab(&mut store, &mut offsets, [1.5, 0.0, 1.0]);
     }
-    let op = stroke.end(&mut store, &mut offsets);
+    let op = stroke.end(&mut store, &mut offsets, &mut paints);
     assert!(store.cell_count() > before, "topology growth");
     let (_, odd) = boundary_stats(&store);
     assert_eq!(odd, 0, "watertight after growth");
@@ -161,7 +168,7 @@ fn draw_brush_with_topology_grows_and_stays_watertight() {
         assert!(ops::on_surface(&store, l), "offset stranded at {:?}", l);
     }
     // one-op undo restores exactly
-    ops::apply_op(&mut store, &mut offsets, &op, false);
+    ops::apply_op(&mut store, &mut offsets, &mut paints, &op, false);
     assert_eq!(store.cell_count(), before);
     assert_eq!(offsets.len(), 0);
 }
@@ -170,13 +177,14 @@ fn draw_brush_with_topology_grows_and_stays_watertight() {
 fn smooth_brush_rounds_edges_from_zero_offsets() {
     let mut store = ChunkStore::new();
     let mut offsets = Offsets::default();
+    let mut paints = Paints::default();
     store.fill_box((0, -1, 0), (3, 0, 3), true);
     store.fill_box((1, 0, 1), (2, 1, 2), true); // box on a plateau
     let mut stroke = Stroke::new(BrushTool::Smooth, false, 2.0, 0.8, false);
     for _ in 0..4 {
         stroke.dab(&mut store, &mut offsets, [1.5, 1.0, 1.5]);
     }
-    let _ = stroke.end(&mut store, &mut offsets);
+    let _ = stroke.end(&mut store, &mut offsets, &mut paints);
     assert!(offsets.len() > 4, "smoothing produced offsets");
     let (_, odd) = boundary_stats(&store);
     assert_eq!(odd, 0);
@@ -198,9 +206,47 @@ fn json_roundtrip() {
     let mut w = World::new();
     w.seed_voxel();
     w.set_shift_raw(0, 0, 0, 0.25, 0.5, -0.25);
+    w.paint_stroke_begin();
+    assert!(w.paint_face(0, -1, 0, 2, 3, 4, 1, true, false));
+    w.paint_stroke_end();
     let json = w.to_json();
     let mut w2 = World::new();
     assert!(w2.load_json(&json));
     assert_eq!(w2.cell_count(), 1.0);
     assert_eq!(w2.get_shift(0, 0, 0), vec![0.25, 0.5, -0.25]);
+    assert_eq!(w2.get_paint(0, -1, 0, 2), vec![3, 4, 1, 1, 0]);
+}
+
+#[test]
+fn paint_strokes_hygiene_and_undo() {
+    use boxcore::wasm_api::World;
+    let mut w = World::new();
+    w.seed_voxel(); // cell (0,-1,0)
+
+    // paint the top face; a stroke is one op
+    w.paint_stroke_begin();
+    assert!(w.paint_face(0, -1, 0, 2, 5, 6, 0, false, false));
+    // painting a buried face is refused (no cell there to face into)
+    assert!(!w.paint_face(5, 5, 5, 2, 5, 6, 0, false, false));
+    w.paint_stroke_end();
+    assert_eq!(w.paint_count(), 1);
+    assert!(w.undo());
+    assert_eq!(w.paint_count(), 0);
+    assert!(w.redo());
+    assert_eq!(w.paint_count(), 1);
+
+    // extruding the painted top carries the paint to the new top
+    assert!(w.extrude_rect(1, 1, 0, 0, 0, 0, 0, 1)); // adds (0,0,0)
+    assert_eq!(w.get_paint(0, 0, 0, 2), vec![5, 6, 0, 0, 0], "extrusion inherits paint");
+    // the old top face is now buried; its paint entry was cleaned
+    assert_eq!(w.get_paint(0, -1, 0, 2), Vec::<i32>::new());
+
+    // carving the new cell exposes the old top again, inheriting back down
+    assert!(w.extrude_rect(1, 1, 1, 0, 0, 0, 0, -1)); // removes (0,0,0)
+    assert_eq!(w.get_paint(0, -1, 0, 2), vec![5, 6, 0, 0, 0], "carve inherits paint");
+    assert_eq!(w.paint_count(), 1);
+
+    // undo the carve: paint moves back up with the cell
+    assert!(w.undo());
+    assert_eq!(w.get_paint(0, 0, 0, 2), vec![5, 6, 0, 0, 0]);
 }

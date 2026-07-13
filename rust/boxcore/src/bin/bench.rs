@@ -6,7 +6,7 @@
 
 use boxcore::mesh::{mesh_chunk, mesh_chunk_lod, MeshOpts};
 use boxcore::ops::{BrushTool, RectSel, Stroke};
-use boxcore::store::{ChunkStore, Offsets};
+use boxcore::store::{ChunkStore, Offsets, Paints};
 use boxcore::IV;
 use rustc_hash::FxHashSet;
 use std::time::Instant;
@@ -15,22 +15,22 @@ fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
 }
 
-fn mesh_all(store: &ChunkStore, offsets: &Offsets, opts: &MeshOpts) -> (usize, f64) {
+fn mesh_all(store: &ChunkStore, offsets: &Offsets, paints: &Paints, opts: &MeshOpts) -> (usize, f64) {
     let t = Instant::now();
     let mut faces = 0usize;
     let positions: Vec<IV> = store.chunks.keys().copied().collect();
     for cp in positions {
-        faces += mesh_chunk(store, offsets, cp, opts).face_count();
+        faces += mesh_chunk(store, offsets, paints, cp, opts).face_count();
     }
     (faces, ms(t))
 }
 
-fn remesh_dirty(store: &mut ChunkStore, offsets: &Offsets, opts: &MeshOpts) -> (usize, usize, f64) {
+fn remesh_dirty(store: &mut ChunkStore, offsets: &Offsets, paints: &Paints, opts: &MeshOpts) -> (usize, usize, f64) {
     let t = Instant::now();
     let dirty: Vec<IV> = store.dirty.drain().collect();
     let mut faces = 0usize;
     for cp in &dirty {
-        faces += mesh_chunk(store, offsets, *cp, opts).face_count();
+        faces += mesh_chunk(store, offsets, paints, *cp, opts).face_count();
     }
     (dirty.len(), faces, ms(t))
 }
@@ -79,6 +79,7 @@ fn main() {
         println!("[cube] 1000×1000×1000 solid cube — 1e9 cells");
         let mut store = ChunkStore::new();
         let offsets = Offsets::default();
+        let mut paints = Paints::default();
         let t = Instant::now();
         store.fill_box((0, 0, 0), (1000, 1000, 1000), true);
         let fill_ms = ms(t);
@@ -98,9 +99,12 @@ fn main() {
         let (faces, mesh_ms) = mesh_all(
             &store,
             &offsets,
+            &paints,
             &MeshOpts {
                 sculpted: true,
                 tint: false,
+                paint: false,
+                grid: (8, 8),
             },
         );
         println!(
@@ -123,14 +127,17 @@ fn main() {
             b1: 511,
         };
         let t = Instant::now();
-        let op = boxcore::ops::extrude_rect(&mut store, &mut offsets, &sel, -1);
+        let op = boxcore::ops::extrude_rect(&mut store, &mut offsets, &mut paints, &sel, -1);
         let op_ms = ms(t);
         let (n_dirty, _, rm_ms) = remesh_dirty(
             &mut store,
             &offsets,
+            &paints,
             &MeshOpts {
                 sculpted: true,
                 tint: false,
+                paint: false,
+                grid: (8, 8),
             },
         );
         println!(
@@ -187,6 +194,7 @@ fn main() {
         println!("[terrain] 1024×1024 fbm heightfield (blobby organic case)");
         let mut store = ChunkStore::new();
         let mut offsets = Offsets::default();
+        let mut paints = Paints::default();
         let t = Instant::now();
         for x in 0..1024 {
             for z in 0..1024 {
@@ -207,9 +215,12 @@ fn main() {
         let (faces, mesh_ms) = mesh_all(
             &store,
             &offsets,
+            &paints,
             &MeshOpts {
                 sculpted: true,
                 tint: false,
+                paint: false,
+                grid: (8, 8),
             },
         );
         println!(
@@ -253,13 +264,16 @@ fn main() {
             let y = terrain_height(x, z);
             let mut stroke = Stroke::new(BrushTool::Draw, false, 3.0, 0.8, true);
             stroke.dab(&mut store, &mut offsets, [x as f32, y as f32, z as f32]);
-            let _ = stroke.end(&mut store, &mut offsets);
+            let _ = stroke.end(&mut store, &mut offsets, &mut paints);
             let (nd, _, rms) = remesh_dirty(
                 &mut store,
                 &offsets,
+                &paints,
                 &MeshOpts {
                     sculpted: true,
                     tint: false,
+                    paint: false,
+                    grid: (8, 8),
                 },
             );
             total_remesh += rms;
@@ -284,13 +298,16 @@ fn main() {
             for _ in 0..4 {
                 stroke.dab(&mut store, &mut offsets, [x as f32, y as f32, z as f32]);
             }
-            let _ = stroke.end(&mut store, &mut offsets);
+            let _ = stroke.end(&mut store, &mut offsets, &mut paints);
             let _ = remesh_dirty(
                 &mut store,
                 &offsets,
+                &paints,
                 &MeshOpts {
                     sculpted: true,
                     tint: false,
+                    paint: false,
+                    grid: (8, 8),
                 },
             );
         }

@@ -3,7 +3,7 @@
 //! AO with the AO-aware diagonal flip, optional displacement (sculpted view)
 //! and displacement-magnitude tinting (untextured view).
 
-use crate::store::{Chunk, ChunkStore, Neighborhood, Offsets, S};
+use crate::store::{unpack_paint, Chunk, ChunkStore, Neighborhood, Offsets, Paints, S};
 use crate::{add_iv, pack, plane_axes, quad_normal, IV, V3, CORNERS, DIRS};
 use rustc_hash::FxHashMap;
 
@@ -16,14 +16,27 @@ const SHIFT_TINT: V3 = [1.0, 0.5, 0.12];
 pub struct ChunkMesh {
     pub positions: Vec<f32>,
     pub colors: Vec<f32>,
+    pub uvs: Vec<f32>,
     pub indices: Vec<u32>,
     /// Per-face key: cellx, celly, cellz, dir (parallel to faces, 4 ints each).
     pub face_keys: Vec<i32>,
+    /// Faces [0, unpainted_faces) are flat-shaded; the rest sample the tileset.
+    pub unpainted_faces: usize,
 }
 
 impl ChunkMesh {
     pub fn face_count(&self) -> usize {
         self.face_keys.len() / 4
+    }
+
+    /// Append `other`'s faces after this mesh's (rebasing indices).
+    fn append(&mut self, other: ChunkMesh) {
+        let vbase = (self.positions.len() / 3) as u32;
+        self.positions.extend_from_slice(&other.positions);
+        self.colors.extend_from_slice(&other.colors);
+        self.uvs.extend_from_slice(&other.uvs);
+        self.indices.extend(other.indices.iter().map(|i| i + vbase));
+        self.face_keys.extend_from_slice(&other.face_keys);
     }
 }
 
@@ -32,6 +45,10 @@ pub struct MeshOpts {
     pub sculpted: bool,
     /// Tint displaced corners orange (the "untextured" view).
     pub tint: bool,
+    /// Emit tile UVs for painted faces (the "textured" view).
+    pub paint: bool,
+    /// Tileset grid (columns, rows) for UV computation.
+    pub grid: (u32, u32),
 }
 
 const P: i32 = S + 2; // padded side (1-cell apron for neighbors + AO)
@@ -42,7 +59,15 @@ fn pidx(x: i32, y: i32, z: i32) -> usize {
 }
 
 /// Mesh one chunk. Empty chunks yield an empty mesh (callers drop the mesh).
-pub fn mesh_chunk(store: &ChunkStore, offsets: &Offsets, cp: IV, opts: &MeshOpts) -> ChunkMesh {
+/// Faces are emitted unpainted-first, painted-after, so the renderer can draw
+/// them as two material groups (flat shading vs. tileset texture).
+pub fn mesh_chunk(
+    store: &ChunkStore,
+    offsets: &Offsets,
+    paints: &Paints,
+    cp: IV,
+    opts: &MeshOpts,
+) -> ChunkMesh {
     let mut out = ChunkMesh::default();
     let chunk = match store.chunks.get(&cp) {
         None => return out,
@@ -101,32 +126,69 @@ pub fn mesh_chunk(store: &ChunkStore, offsets: &Offsets, cp: IV, opts: &MeshOpts
 
     let use_offsets = opts.sculpted && !offsets.is_empty();
     let want_tint = opts.tint && !offsets.is_empty();
+    let want_paint = opts.paint && !paints.is_empty();
 
+    let mut painted = ChunkMesh::default();
     for z in 0..S {
         for y in 0..S {
             for x in 0..S {
                 if occ[pidx(x, y, z)] == 0 {
                     continue;
                 }
+                let cell = (base.0 + x, base.1 + y, base.2 + z);
+                let ck = pack(cell);
                 for (d, dir) in DIRS.iter().enumerate() {
                     if occ[pidx(x + dir.0, y + dir.1, z + dir.2)] != 0 {
                         continue;
                     }
+                    let paint = if want_paint { paints.get(ck, d as u8) } else { None };
+                    let target = if paint.is_some() { &mut painted } else { &mut out };
                     emit_face(
-                        &mut out,
+                        target,
                         &occ,
                         offsets,
-                        (base.0 + x, base.1 + y, base.2 + z),
+                        cell,
                         (x, y, z),
                         d,
                         use_offsets,
                         want_tint,
+                        paint,
+                        opts.grid,
                     );
                 }
             }
         }
     }
+    out.unpainted_faces = out.face_count();
+    out.append(painted);
     out
+}
+
+/// UVs for a painted face, [bl, br, tr, tl]: the tile rect from the tileset
+/// grid (rows counted from the top of the image, three.js flipY convention),
+/// with flips applied first and then clockwise quarter-turns.
+fn paint_uvs(paint: u32, grid: (u32, u32)) -> [[f32; 2]; 4] {
+    let (tx, ty, rot, fh, fv) = unpack_paint(paint);
+    let cols = grid.0.max(1) as f32;
+    let rows = grid.1.max(1) as f32;
+    let u0 = tx as f32 / cols;
+    let u1 = (tx + 1) as f32 / cols;
+    let v1 = 1.0 - ty as f32 / rows;
+    let v0 = 1.0 - (ty + 1) as f32 / rows;
+    let mut uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+    if fh {
+        uv.swap(0, 1);
+        uv.swap(2, 3);
+    }
+    if fv {
+        uv.swap(0, 3);
+        uv.swap(1, 2);
+    }
+    let mut rotated = uv;
+    for (i, slot) in rotated.iter_mut().enumerate() {
+        *slot = uv[(i + 3 * rot as usize) % 4];
+    }
+    rotated
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -139,6 +201,8 @@ fn emit_face(
     d: usize,
     use_offsets: bool,
     want_tint: bool,
+    paint: Option<u32>,
+    grid: (u32, u32),
 ) {
     let dir = DIRS[d];
     let axis = d >> 1;
@@ -191,20 +255,30 @@ fn emit_face(
     let lambert = (n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]).max(0.0);
     let bright = 0.58 + 0.42 * lambert + 0.1 * n[1].min(0.0);
 
+    let uvs = paint.map(|p| paint_uvs(p, grid));
     let vbase = (out.positions.len() / 3) as u32;
     for k in 0..4 {
         out.positions.extend_from_slice(&verts[k]);
-        let bk = bright * AO_CURVE[ao[k] as usize];
-        let mut r = VOL_BASE[0] * bk;
-        let mut g = VOL_BASE[1] * bk;
-        let mut b = VOL_BASE[2] * bk;
-        let t = tint_t[k];
-        if t > 0.0 {
-            r += (SHIFT_TINT[0] - r) * t;
-            g += (SHIFT_TINT[1] - g) * t;
-            b += (SHIFT_TINT[2] - b) * t;
+        if let Some(uv) = &uvs {
+            // painted faces: vertex color carries the shading only (the map
+            // is modulated by it), full-brightness base
+            let bk = bright * AO_CURVE[ao[k] as usize];
+            out.colors.extend_from_slice(&[bk, bk, bk]);
+            out.uvs.extend_from_slice(&uv[k]);
+        } else {
+            let bk = bright * AO_CURVE[ao[k] as usize];
+            let mut r = VOL_BASE[0] * bk;
+            let mut g = VOL_BASE[1] * bk;
+            let mut b = VOL_BASE[2] * bk;
+            let t = tint_t[k];
+            if t > 0.0 {
+                r += (SHIFT_TINT[0] - r) * t;
+                g += (SHIFT_TINT[1] - g) * t;
+                b += (SHIFT_TINT[2] - b) * t;
+            }
+            out.colors.extend_from_slice(&[r, g, b]);
+            out.uvs.extend_from_slice(&[0.0, 0.0]);
         }
-        out.colors.extend_from_slice(&[r, g, b]);
     }
     // AO-aware diagonal (the classic anisotropy fix)
     if ao[0] as i32 + ao[2] as i32 >= ao[1] as i32 + ao[3] as i32 {
@@ -354,6 +428,7 @@ pub fn mesh_chunk_lod(store: &ChunkStore, cp: IV, level: u32) -> ChunkMesh {
                             VOL_BASE[1] * bk,
                             VOL_BASE[2] * bk,
                         ]);
+                        out.uvs.extend_from_slice(&[0.0, 0.0]);
                     }
                     if ao[0] as i32 + ao[2] as i32 >= ao[1] as i32 + ao[3] as i32 {
                         out.indices.extend_from_slice(&[
@@ -380,6 +455,7 @@ pub fn mesh_chunk_lod(store: &ChunkStore, cp: IV, level: u32) -> ChunkMesh {
             }
         }
     }
+    out.unpainted_faces = out.face_count();
     out
 }
 

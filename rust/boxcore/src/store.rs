@@ -305,6 +305,53 @@ impl<'a> Neighborhood<'a> {
     }
 }
 
+/// A face's paint: tile column/row plus orientation, packed into a u32
+/// (tx 12 bits | ty 12 bits | rot 2 bits | flipH | flipV).
+pub fn pack_paint(tx: u32, ty: u32, rot: u32, fh: bool, fv: bool) -> u32 {
+    (tx & 0xFFF) | ((ty & 0xFFF) << 12) | ((rot & 3) << 24) | ((fh as u32) << 26) | ((fv as u32) << 27)
+}
+
+pub fn unpack_paint(p: u32) -> (u32, u32, u32, bool, bool) {
+    (
+        p & 0xFFF,
+        (p >> 12) & 0xFFF,
+        (p >> 24) & 3,
+        (p >> 26) & 1 != 0,
+        (p >> 27) & 1 != 0,
+    )
+}
+
+/// Per-face tile assignments, keyed by (packed cell, dir).
+#[derive(Default)]
+pub struct Paints {
+    pub map: FxHashMap<(i64, u8), u32>,
+}
+
+impl Paints {
+    pub fn get(&self, cell_key: i64, dir: u8) -> Option<u32> {
+        self.map.get(&(cell_key, dir)).copied()
+    }
+
+    pub fn set(&mut self, cell_key: i64, dir: u8, v: Option<u32>) {
+        match v {
+            None => {
+                self.map.remove(&(cell_key, dir));
+            }
+            Some(p) => {
+                self.map.insert((cell_key, dir), p);
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
 /// Sparse lattice-corner displacements, hard-clamped to ±0.5 per axis.
 #[derive(Default)]
 pub struct Offsets {

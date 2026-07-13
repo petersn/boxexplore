@@ -18,6 +18,7 @@ export class World {
     drag_begin(keys: Int32Array): void;
     drag_end(): boolean;
     drag_update(dx: number, dy: number, dz: number): void;
+    erase_paint_face(x: number, y: number, z: number, d: number): boolean;
     extrude_rect(axis: number, sign: number, plane: number, a0: number, a1: number, b0: number, b1: number, dir: number): boolean;
     /**
      * [12 floats] for an exposed face's quad, [] if the face isn't exposed.
@@ -28,6 +29,10 @@ export class World {
      */
     fill_box_raw(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, v: boolean): void;
     get_cell(x: number, y: number, z: number): boolean;
+    /**
+     * [tx, ty, rot, flipH, flipV] for a painted face, [] when unpainted.
+     */
+    get_paint(x: number, y: number, z: number, d: number): Int32Array;
     /**
      * [] when absent, [x, y, z] when present.
      */
@@ -40,13 +45,22 @@ export class World {
     /**
      * Mesh one chunk into an internal buffer; returns the face count.
      */
-    mesh_chunk(cx: number, cy: number, cz: number, sculpted: boolean, tint: boolean): number;
+    mesh_chunk(cx: number, cy: number, cz: number, sculpted: boolean, tint: boolean, paint: boolean): number;
     mesh_chunk_lod(cx: number, cy: number, cz: number, level: number): number;
     mesh_colors(): Float32Array;
     mesh_face_keys(): Int32Array;
     mesh_indices(): Uint32Array;
     mesh_positions(): Float32Array;
+    mesh_unpainted_faces(): number;
+    mesh_uvs(): Float32Array;
     constructor();
+    paint_count(): number;
+    /**
+     * Paint one face; returns false if the face isn't exposed.
+     */
+    paint_face(x: number, y: number, z: number, d: number, tx: number, ty: number, rot: number, fh: boolean, fv: boolean): boolean;
+    paint_stroke_begin(): void;
+    paint_stroke_end(): boolean;
     rect_corners(axis: number, sign: number, plane: number, a0: number, a1: number, b0: number, b1: number): Int32Array;
     redo(): boolean;
     reset_rect_offsets(axis: number, sign: number, plane: number, a0: number, a1: number, b0: number, b1: number): boolean;
@@ -59,6 +73,7 @@ export class World {
      * Test/scripting hook (no history): set or clear one offset.
      */
     set_shift_raw(x: number, y: number, z: number, sx: number, sy: number, sz: number): void;
+    set_tileset_grid(cols: number, rows: number): void;
     shift_count(): number;
     shortest_path(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): Int32Array;
     /**
@@ -75,7 +90,8 @@ export class World {
     surface_has_corner(x: number, y: number, z: number): boolean;
     take_dirty(): Int32Array;
     /**
-     * The doc as v3 JSON: {"cells": ["x,y,z", ...], "shifts": {"x,y,z": {x,y,z}}}.
+     * The doc as v4 JSON:
+     * {"cells": [...], "shifts": {...}, "paints": {"x,y,z:d": [tx,ty,rot,fh,fv]}}.
      */
     to_json(): string;
     undo(): boolean;
@@ -101,26 +117,35 @@ export interface InitOutput {
     readonly world_drag_begin: (a: number, b: number, c: number) => void;
     readonly world_drag_end: (a: number) => number;
     readonly world_drag_update: (a: number, b: number, c: number, d: number) => void;
+    readonly world_erase_paint_face: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly world_extrude_rect: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
     readonly world_face_quad: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly world_fill_box_raw: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly world_get_cell: (a: number, b: number, c: number, d: number) => number;
+    readonly world_get_paint: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly world_get_shift: (a: number, b: number, c: number, d: number) => [number, number];
     readonly world_load_json: (a: number, b: number, c: number) => number;
     readonly world_max_shift_abs: (a: number) => number;
-    readonly world_mesh_chunk: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+    readonly world_mesh_chunk: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly world_mesh_chunk_lod: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly world_mesh_colors: (a: number) => [number, number];
     readonly world_mesh_face_keys: (a: number) => [number, number];
     readonly world_mesh_indices: (a: number) => [number, number];
     readonly world_mesh_positions: (a: number) => [number, number];
+    readonly world_mesh_unpainted_faces: (a: number) => number;
+    readonly world_mesh_uvs: (a: number) => [number, number];
     readonly world_new: () => number;
+    readonly world_paint_count: (a: number) => number;
+    readonly world_paint_face: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
+    readonly world_paint_stroke_begin: (a: number) => void;
+    readonly world_paint_stroke_end: (a: number) => number;
     readonly world_rect_corners: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly world_redo: (a: number) => number;
     readonly world_reset_rect_offsets: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
     readonly world_seed_voxel: (a: number) => number;
     readonly world_selection_op: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly world_set_shift_raw: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly world_set_tileset_grid: (a: number, b: number, c: number) => void;
     readonly world_shift_count: (a: number) => number;
     readonly world_shortest_path: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly world_stats: (a: number) => [number, number];

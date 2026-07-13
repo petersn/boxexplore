@@ -22,6 +22,13 @@ export interface FaceRef {
   dir: number;
 }
 
+/** Tile orientation for painted faces: quarter turns + flips. */
+export interface PaintOrient {
+  rot: 0 | 1 | 2 | 3;
+  flipH: boolean;
+  flipV: boolean;
+}
+
 export interface RectSel {
   axis: 0 | 1 | 2;
   sign: 1 | -1;
@@ -241,6 +248,53 @@ export class WorldHandle {
   strokeEnd(): void {
     this.raw.stroke_end();
     this.notify();
+  }
+
+  // -- painting -----------------------------------------------------------------
+
+  setTilesetGrid(cols: number, rows: number): void {
+    this.raw.set_tileset_grid(cols, rows);
+  }
+
+  paintStrokeBegin(): void {
+    this.raw.paint_stroke_begin();
+  }
+
+  paintFace(face: FaceRef, tx: number, ty: number, orient: PaintOrient): boolean {
+    const ok = this.raw.paint_face(
+      face.cell[0],
+      face.cell[1],
+      face.cell[2],
+      face.dir,
+      tx,
+      ty,
+      orient.rot,
+      orient.flipH,
+      orient.flipV,
+    );
+    if (ok) this.notify();
+    return ok;
+  }
+
+  erasePaintFace(face: FaceRef): boolean {
+    const ok = this.raw.erase_paint_face(face.cell[0], face.cell[1], face.cell[2], face.dir);
+    if (ok) this.notify();
+    return ok;
+  }
+
+  paintStrokeEnd(): void {
+    this.raw.paint_stroke_end();
+    this.notify();
+  }
+
+  /** [tx, ty, rot, flipH, flipV] or null when unpainted. */
+  getPaint(face: FaceRef): [number, number, number, boolean, boolean] | null {
+    const p = this.raw.get_paint(face.cell[0], face.cell[1], face.cell[2], face.dir);
+    return p.length === 5 ? [p[0], p[1], p[2], p[3] !== 0, p[4] !== 0] : null;
+  }
+
+  paintCount(): number {
+    return this.raw.paint_count();
   }
 
   shortestPath(from: LatticeKey, to: LatticeKey): LatticeKey[] {

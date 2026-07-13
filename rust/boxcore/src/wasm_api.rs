@@ -3,8 +3,8 @@
 //! these methods and renders the returned buffers.
 
 use crate::mesh::{self, ChunkMesh, MeshOpts};
-use crate::ops::{self, BrushTool, DragState, EditOp, History, RectSel, SelectionOp, Stroke};
-use crate::store::{ChunkStore, Offsets};
+use crate::ops::{self, BrushTool, DragState, EditOp, History, PaintStroke, RectSel, SelectionOp, Stroke};
+use crate::store::{pack_paint, unpack_paint, ChunkStore, Offsets, Paints};
 use crate::{unpack, IV};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -16,6 +16,9 @@ struct DocJson {
     cells: Vec<String>,
     #[serde(default)]
     shifts: BTreeMap<String, ShiftJson>,
+    /// "x,y,z:d" -> [tx, ty, rot, flipH, flipV]
+    #[serde(default)]
+    paints: BTreeMap<String, [u32; 5]>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -41,11 +44,14 @@ fn keys_from_triples(t: &[i32]) -> Vec<IV> {
 pub struct World {
     store: ChunkStore,
     offsets: Offsets,
+    paints: Paints,
     history: History,
     drag: Option<DragState>,
     stroke: Option<Stroke>,
+    paint_stroke: Option<PaintStroke>,
     rng: u64,
     last_mesh: ChunkMesh,
+    tileset_grid: (u32, u32),
 }
 
 impl Default for World {
@@ -61,11 +67,14 @@ impl World {
         World {
             store: ChunkStore::new(),
             offsets: Offsets::default(),
+            paints: Paints::default(),
             history: History::default(),
             drag: None,
             stroke: None,
+            paint_stroke: None,
             rng: 0x9E3779B97F4A7C15,
             last_mesh: ChunkMesh::default(),
+            tileset_grid: (8, 8),
         }
     }
 
@@ -161,14 +170,40 @@ impl World {
     }
 
     /// Mesh one chunk into an internal buffer; returns the face count.
-    pub fn mesh_chunk(&mut self, cx: i32, cy: i32, cz: i32, sculpted: bool, tint: bool) -> u32 {
+    pub fn mesh_chunk(
+        &mut self,
+        cx: i32,
+        cy: i32,
+        cz: i32,
+        sculpted: bool,
+        tint: bool,
+        paint: bool,
+    ) -> u32 {
         self.last_mesh = mesh::mesh_chunk(
             &self.store,
             &self.offsets,
+            &self.paints,
             (cx, cy, cz),
-            &MeshOpts { sculpted, tint },
+            &MeshOpts {
+                sculpted,
+                tint,
+                paint,
+                grid: self.tileset_grid,
+            },
         );
         self.last_mesh.face_count() as u32
+    }
+
+    pub fn mesh_uvs(&self) -> Vec<f32> {
+        self.last_mesh.uvs.clone()
+    }
+
+    pub fn mesh_unpainted_faces(&self) -> u32 {
+        self.last_mesh.unpainted_faces as u32
+    }
+
+    pub fn set_tileset_grid(&mut self, cols: u32, rows: u32) {
+        self.tileset_grid = (cols.max(1), rows.max(1));
     }
 
     pub fn mesh_chunk_lod(&mut self, cx: i32, cy: i32, cz: i32, level: u32) -> u32 {
@@ -203,7 +238,7 @@ impl World {
     // -- build ops ----------------------------------------------------------------
 
     pub fn seed_voxel(&mut self) -> bool {
-        let op = ops::seed_voxel(&mut self.store, &mut self.offsets);
+        let op = ops::seed_voxel(&mut self.store, &mut self.offsets, &mut self.paints);
         self.commit(op)
     }
 
@@ -228,7 +263,7 @@ impl World {
             b0,
             b1,
         };
-        let op = ops::extrude_rect(&mut self.store, &mut self.offsets, &sel, dir);
+        let op = ops::extrude_rect(&mut self.store, &mut self.offsets, &mut self.paints, &sel, dir);
         self.commit(op)
     }
 
@@ -256,7 +291,7 @@ impl World {
         if op.is_empty() {
             return false;
         }
-        ops::apply_op(&mut self.store, &mut self.offsets, &op, true);
+        ops::apply_op(&mut self.store, &mut self.offsets, &mut self.paints, &op, true);
         self.commit(op)
     }
 
@@ -288,11 +323,11 @@ impl World {
     }
 
     pub fn undo(&mut self) -> bool {
-        self.history.undo(&mut self.store, &mut self.offsets)
+        self.history.undo(&mut self.store, &mut self.offsets, &mut self.paints)
     }
 
     pub fn redo(&mut self) -> bool {
-        self.history.redo(&mut self.store, &mut self.offsets)
+        self.history.redo(&mut self.store, &mut self.offsets, &mut self.paints)
     }
 
     // -- sculpt ---------------------------------------------------------------------
@@ -370,7 +405,7 @@ impl World {
         match self.stroke.take() {
             None => false,
             Some(stroke) => {
-                let op = stroke.end(&mut self.store, &mut self.offsets);
+                let op = stroke.end(&mut self.store, &mut self.offsets, &mut self.paints);
                 self.commit(op)
             }
         }
@@ -384,9 +419,76 @@ impl World {
         out
     }
 
+    // -- painting -------------------------------------------------------------------
+
+    pub fn paint_stroke_begin(&mut self) {
+        self.paint_stroke = Some(PaintStroke::new());
+    }
+
+    /// Paint one face; returns false if the face isn't exposed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_face(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        d: u32,
+        tx: u32,
+        ty: u32,
+        rot: u32,
+        fh: bool,
+        fv: bool,
+    ) -> bool {
+        match &mut self.paint_stroke {
+            None => false,
+            Some(stroke) => stroke.paint(
+                &mut self.store,
+                &mut self.paints,
+                (x, y, z),
+                d as usize,
+                Some(pack_paint(tx, ty, rot, fh, fv)),
+            ),
+        }
+    }
+
+    pub fn erase_paint_face(&mut self, x: i32, y: i32, z: i32, d: u32) -> bool {
+        match &mut self.paint_stroke {
+            None => false,
+            Some(stroke) => {
+                stroke.paint(&mut self.store, &mut self.paints, (x, y, z), d as usize, None)
+            }
+        }
+    }
+
+    pub fn paint_stroke_end(&mut self) -> bool {
+        match self.paint_stroke.take() {
+            None => false,
+            Some(stroke) => {
+                let op = stroke.end(&self.paints);
+                self.commit(op)
+            }
+        }
+    }
+
+    /// [tx, ty, rot, flipH, flipV] for a painted face, [] when unpainted.
+    pub fn get_paint(&self, x: i32, y: i32, z: i32, d: u32) -> Vec<i32> {
+        match self.paints.get(crate::pack((x, y, z)), d as u8) {
+            None => vec![],
+            Some(p) => {
+                let (tx, ty, rot, fh, fv) = unpack_paint(p);
+                vec![tx as i32, ty as i32, rot as i32, fh as i32, fv as i32]
+            }
+        }
+    }
+
+    pub fn paint_count(&self) -> u32 {
+        self.paints.len() as u32
+    }
+
     // -- io ------------------------------------------------------------------------
 
-    /// The doc as v3 JSON: {"cells": ["x,y,z", ...], "shifts": {"x,y,z": {x,y,z}}}.
+    /// The doc as v4 JSON:
+    /// {"cells": [...], "shifts": {...}, "paints": {"x,y,z:d": [tx,ty,rot,fh,fv]}}.
     pub fn to_json(&self) -> String {
         let mut doc = DocJson::default();
         self.store.for_each_cell(|c| {
@@ -401,6 +503,14 @@ impl World {
                     y: v[1],
                     z: v[2],
                 },
+            );
+        }
+        for ((ck, d), p) in &self.paints.map {
+            let c = unpack(*ck);
+            let (tx, ty, rot, fh, fv) = unpack_paint(*p);
+            doc.paints.insert(
+                format!("{},{},{}:{}", c.0, c.1, c.2, d),
+                [tx, ty, rot, fh as u32, fv as u32],
             );
         }
         serde_json::to_string(&doc).unwrap_or_else(|_| "{}".into())
@@ -423,6 +533,19 @@ impl World {
                 self.store.mark_lattice_dirty(l);
             }
         }
+        for (k, v) in &doc.paints {
+            let mut it = k.split(':');
+            let (Some(cell_s), Some(d_s)) = (it.next(), it.next()) else {
+                continue;
+            };
+            let (Some(cell), Ok(d)) = (parse_triple(cell_s), d_s.trim().parse::<u8>()) else {
+                continue;
+            };
+            if d < 6 {
+                self.paints
+                    .set(crate::pack(cell), d, Some(pack_paint(v[0], v[1], v[2], v[3] != 0, v[4] != 0)));
+            }
+        }
         self.history.clear();
         true
     }
@@ -430,9 +553,11 @@ impl World {
     pub fn clear(&mut self) {
         self.store.clear();
         self.offsets.map.clear();
+        self.paints.map.clear();
         self.history.clear();
         self.drag = None;
         self.stroke = None;
+        self.paint_stroke = None;
     }
 
     pub fn clear_history(&mut self) {

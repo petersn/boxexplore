@@ -19,6 +19,8 @@ interface ChunkEntry {
 export interface ViewOpts {
   sculpted: boolean;
   tint: boolean;
+  /** Show painted tiles (the "textured" view). */
+  paint: boolean;
 }
 
 /** Distance thresholds (in world units) for LOD levels 1 and 2. */
@@ -28,21 +30,32 @@ const OUTLINE_DIST = 96;
 
 export class ChunkRenderer {
   readonly group = new THREE.Group();
-  view: ViewOpts = { sculpted: true, tint: false };
+  view: ViewOpts = { sculpted: true, tint: false, paint: true };
   /** Enable distance-based LOD for far chunks. */
   lod = true;
 
   private chunks = new Map<string, ChunkEntry>();
-  private material: THREE.MeshBasicMaterial;
+  /** [0] flat-shaded faces, [1] painted faces sampling the tileset. */
+  private materials: [THREE.MeshBasicMaterial, THREE.MeshBasicMaterial];
   private outlineMaterial: THREE.LineBasicMaterial;
 
-  constructor() {
-    this.material = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
-    });
+  constructor(tilesetTexture: THREE.Texture) {
+    this.materials = [
+      new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      }),
+      new THREE.MeshBasicMaterial({
+        map: tilesetTexture,
+        vertexColors: true, // carries the lambert/AO shading for painted faces
+        alphaTest: 0.5,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      }),
+    ];
     this.outlineMaterial = new THREE.LineBasicMaterial({
       color: 0x0e1013,
       transparent: true,
@@ -83,7 +96,7 @@ export class ChunkRenderer {
     const key = `${cx},${cy},${cz}`;
     const faces =
       level === 0
-        ? world.raw.mesh_chunk(cx, cy, cz, this.view.sculpted, this.view.tint)
+        ? world.raw.mesh_chunk(cx, cy, cz, this.view.sculpted, this.view.tint, this.view.paint)
         : world.raw.mesh_chunk_lod(cx, cy, cz, level);
     if (faces === 0) {
       this.removeChunk(key);
@@ -91,12 +104,14 @@ export class ChunkRenderer {
     }
     const positions = world.raw.mesh_positions();
     const colors = world.raw.mesh_colors();
+    const uvs = world.raw.mesh_uvs();
     const indices = world.raw.mesh_indices();
+    const unpainted = level === 0 ? world.raw.mesh_unpainted_faces() : faces;
     const faceKeys = level === 0 ? new Int32Array(world.raw.mesh_face_keys()) : new Int32Array(0);
 
     let entry = this.chunks.get(key);
     if (!entry) {
-      const mesh = new THREE.Mesh(new THREE.BufferGeometry(), this.material);
+      const mesh = new THREE.Mesh(new THREE.BufferGeometry(), this.materials);
       mesh.frustumCulled = true;
       mesh.matrixAutoUpdate = false;
       const outline = new THREE.LineSegments(new THREE.BufferGeometry(), this.outlineMaterial);
@@ -121,6 +136,10 @@ export class ChunkRenderer {
     geo.setIndex(new THREE.BufferAttribute(indices, 1));
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geo.clearGroups();
+    geo.addGroup(0, unpainted * 6, 0); // flat-shaded faces
+    if (faces > unpainted) geo.addGroup(unpainted * 6, (faces - unpainted) * 6, 1); // painted
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
 
@@ -192,6 +211,16 @@ export class ChunkRenderer {
 
   chunkCount(): number {
     return this.chunks.size;
+  }
+
+  /** Debug/test helper: total painted faces currently rendered. */
+  paintedFaceCount(): number {
+    let n = 0;
+    for (const entry of this.chunks.values()) {
+      const groups = entry.mesh.geometry.groups;
+      if (groups.length > 1) n += groups[1].count / 6;
+    }
+    return n;
   }
 
   /** Debug/test helper: how many chunks are at each LOD level. */

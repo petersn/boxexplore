@@ -97,6 +97,17 @@ export class World {
         wasm.world_drag_update(this.__wbg_ptr, dx, dy, dz);
     }
     /**
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {number} d
+     * @returns {boolean}
+     */
+    erase_paint_face(x, y, z, d) {
+        const ret = wasm.world_erase_paint_face(this.__wbg_ptr, x, y, z, d);
+        return ret !== 0;
+    }
+    /**
      * @param {number} axis
      * @param {number} sign
      * @param {number} plane
@@ -150,6 +161,20 @@ export class World {
         return ret !== 0;
     }
     /**
+     * [tx, ty, rot, flipH, flipV] for a painted face, [] when unpainted.
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {number} d
+     * @returns {Int32Array}
+     */
+    get_paint(x, y, z, d) {
+        const ret = wasm.world_get_paint(this.__wbg_ptr, x, y, z, d);
+        var v1 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * [] when absent, [x, y, z] when present.
      * @param {number} x
      * @param {number} y
@@ -187,10 +212,11 @@ export class World {
      * @param {number} cz
      * @param {boolean} sculpted
      * @param {boolean} tint
+     * @param {boolean} paint
      * @returns {number}
      */
-    mesh_chunk(cx, cy, cz, sculpted, tint) {
-        const ret = wasm.world_mesh_chunk(this.__wbg_ptr, cx, cy, cz, sculpted, tint);
+    mesh_chunk(cx, cy, cz, sculpted, tint, paint) {
+        const ret = wasm.world_mesh_chunk(this.__wbg_ptr, cx, cy, cz, sculpted, tint, paint);
         return ret >>> 0;
     }
     /**
@@ -240,11 +266,61 @@ export class World {
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
     }
+    /**
+     * @returns {number}
+     */
+    mesh_unpainted_faces() {
+        const ret = wasm.world_mesh_unpainted_faces(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Float32Array}
+     */
+    mesh_uvs() {
+        const ret = wasm.world_mesh_uvs(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
     constructor() {
         const ret = wasm.world_new();
         this.__wbg_ptr = ret;
         WorldFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * @returns {number}
+     */
+    paint_count() {
+        const ret = wasm.world_paint_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Paint one face; returns false if the face isn't exposed.
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {number} d
+     * @param {number} tx
+     * @param {number} ty
+     * @param {number} rot
+     * @param {boolean} fh
+     * @param {boolean} fv
+     * @returns {boolean}
+     */
+    paint_face(x, y, z, d, tx, ty, rot, fh, fv) {
+        const ret = wasm.world_paint_face(this.__wbg_ptr, x, y, z, d, tx, ty, rot, fh, fv);
+        return ret !== 0;
+    }
+    paint_stroke_begin() {
+        wasm.world_paint_stroke_begin(this.__wbg_ptr);
+    }
+    /**
+     * @returns {boolean}
+     */
+    paint_stroke_end() {
+        const ret = wasm.world_paint_stroke_end(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * @param {number} axis
@@ -316,6 +392,13 @@ export class World {
      */
     set_shift_raw(x, y, z, sx, sy, sz) {
         wasm.world_set_shift_raw(this.__wbg_ptr, x, y, z, sx, sy, sz);
+    }
+    /**
+     * @param {number} cols
+     * @param {number} rows
+     */
+    set_tileset_grid(cols, rows) {
+        wasm.world_set_tileset_grid(this.__wbg_ptr, cols, rows);
     }
     /**
      * @returns {number}
@@ -402,7 +485,8 @@ export class World {
         return v1;
     }
     /**
-     * The doc as v3 JSON: {"cells": ["x,y,z", ...], "shifts": {"x,y,z": {x,y,z}}}.
+     * The doc as v4 JSON:
+     * {"cells": [...], "shifts": {...}, "paints": {"x,y,z:d": [tx,ty,rot,fh,fv]}}.
      * @returns {string}
      */
     to_json() {

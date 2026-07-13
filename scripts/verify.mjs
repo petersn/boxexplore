@@ -389,6 +389,104 @@ check(
   `${oneBefore} -> ${oneAfter} -> ${await cells()}`,
 );
 
+// --- 12c. face painting ------------------------------------------------------------------
+await freshScene();
+await page.locator('#btn-seed').click();
+await page.keyboard.press('1');
+// small floor: row + widen
+await clickWorld({ x: 1, y: -0.5, z: 0.5 });
+for (let i = 0; i < 3; i++) await page.keyboard.press('=');
+await dragWorld({ x: 0.5, y: -0.5, z: 0 }, { x: 3.5, y: -0.5, z: 0 });
+await page.keyboard.press('=');
+await page.keyboard.press('=');
+check('paint test floor built', (await cells()) === 12, `${await cells()} cells`);
+
+await page.keyboard.press('3');
+check('3 switches to paint mode', (await page.evaluate(() => window.editor.mode.name)) === 'paint');
+check(
+  'paint mode forces the textured view',
+  (await page.evaluate(() => window.editor.texView)) === 'textured',
+);
+const paints = () => page.evaluate(() => window.editor.world.paintCount());
+
+// single-tile paint on a top face
+await page.evaluate(() => {
+  window.editor.stamp = { tx: 2, ty: 1, w: 1, h: 1 };
+});
+await clickWorld({ x: 1.5, y: 0, z: -0.5 });
+check('click paints one face', (await paints()) === 1, `${await paints()} paints`);
+const p0 = await page.evaluate(() =>
+  window.editor.world.getPaint({ cell: [1, -1, -1], dir: 2 }),
+);
+check('painted face has the stamp tile', !!p0 && p0[0] === 2 && p0[1] === 1, JSON.stringify(p0));
+check('painted faces render in a textured group', (await page.evaluate(() => window.editor.renderer.paintedFaceCount())) === 1);
+
+// drag paints a stroke as ONE op; multi-tile stamps lay a pattern
+await page.evaluate(() => {
+  window.editor.stamp = { tx: 0, ty: 0, w: 2, h: 1 };
+});
+await dragWorld({ x: 0.5, y: 0, z: -0.5 }, { x: 3.5, y: 0, z: -0.5 }, { steps: 20 });
+const nPaint = await paints();
+check('drag paints multiple faces', nPaint >= 4, `${nPaint} paints`);
+const pattern = await page.evaluate(() => {
+  const a = window.editor.world.getPaint({ cell: [0, -1, -1], dir: 2 });
+  const b = window.editor.world.getPaint({ cell: [1, -1, -1], dir: 2 });
+  return a && b && a[0] !== b[0]; // 2-wide stamp alternates tile columns
+});
+check('multi-tile stamp lays a grid-locked pattern', !!pattern);
+await page.keyboard.press('ControlOrMeta+z');
+check('paint stroke undoes as one op', (await paints()) === 1, `${await paints()} paints`);
+await page.keyboard.press('ControlOrMeta+Shift+z');
+
+// eyedrop
+await page.evaluate(() => {
+  window.editor.stamp = { tx: 7, ty: 7, w: 1, h: 1 };
+});
+await page.keyboard.down('Alt');
+await clickWorld({ x: 1.5, y: 0, z: -0.5 });
+await page.keyboard.up('Alt');
+const dropped = await page.evaluate(() => ({ ...window.editor.stamp }));
+check('Alt+click eyedrops the tile', dropped.tx === 0 || dropped.tx === 1, JSON.stringify(dropped));
+
+// erase with RMB
+const beforeErase = await paints();
+const eraseAt = await screen({ x: 1.5, y: 0, z: -0.5 });
+await page.mouse.click(box.x + eraseAt.x, box.y + eraseAt.y, { button: 'right' });
+check('right-click erases paint', (await paints()) === beforeErase - 1, `${beforeErase} -> ${await paints()}`);
+
+// paint hygiene: extruding a painted face carries the paint
+await page.evaluate(() => {
+  window.editor.stamp = { tx: 3, ty: 2, w: 1, h: 1 };
+});
+await clickWorld({ x: 2.5, y: 0, z: -0.5 }); // paint top of cell (2,-1,-1)
+check('hygiene setup painted', await page.evaluate(() =>
+  !!window.editor.world.getPaint({ cell: [2, -1, -1], dir: 2 }),
+));
+await page.keyboard.press('1');
+await clickWorld({ x: 2.5, y: 0, z: -0.5 }); // select that face
+await page.keyboard.press('=');
+const carried = await page.evaluate(() => window.editor.world.getPaint({ cell: [2, 0, -1], dir: 2 }));
+check('extrusion carries paint to the new face', !!carried && carried[0] === 3 && carried[1] === 2, JSON.stringify(carried));
+const oldCleared = await page.evaluate(() => window.editor.world.getPaint({ cell: [2, -1, -1], dir: 2 }));
+check('buried face paint is cleaned', oldCleared === null);
+await page.keyboard.press('-');
+const inherited = await page.evaluate(() => window.editor.world.getPaint({ cell: [2, -1, -1], dir: 2 }));
+check('carving inherits paint back down', !!inherited && inherited[0] === 3, JSON.stringify(inherited));
+
+// paints roundtrip through save/load
+const pJson = await page.evaluate(async () => {
+  const { serializeScene } = await import('/src/io.ts');
+  return serializeScene(window.editor);
+});
+const beforeRT = await paints();
+await page.evaluate(() => window.editor.world.clear());
+await page.evaluate(async (data) => {
+  const { loadScene } = await import('/src/io.ts');
+  await loadScene(window.editor, data);
+}, pJson);
+check('paints survive save/load', (await paints()) === beforeRT, `${await paints()} paints`);
+await page.screenshot({ path: `${SHOTS}/57-painted.png` });
+
 // --- 13. cameras (fly uses Q/E for down/up) ------------------------------------------------
 await page.keyboard.press('p');
 check('P switches to fly', (await page.evaluate(() => window.editor.viewport.mode)) === 'fly');

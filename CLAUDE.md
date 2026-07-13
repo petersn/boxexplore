@@ -20,9 +20,11 @@ and benchmark numbers.
 
 - **Rust owns**: the document (chunked voxel store: 32³ chunks, Empty/Full
   tag or 4 KiB bitmap — a one-level VDB; sparse offsets hard-clamped ±0.5 in
-  `Offsets::set`), all edit ops + offset hygiene, diff undo/redo, meshing
-  (AO, sculpted/voxel geometry, untextured tint, LOD levels), visibility,
-  shortest paths, serialization (v3: `{cells, shifts}`).
+  `Offsets::set`; per-face `Paints` keyed (cell, dir) with packed
+  tile+orientation), all edit ops + offset AND paint hygiene, diff undo/redo,
+  meshing (AO, sculpted/voxel geometry, untextured tint, tile UVs with two
+  material groups, LOD levels), visibility, shortest paths, serialization
+  (v4: `{cells, shifts, paints}`).
 - **TS owns**: pointer/keyboard interaction, camera, overlays (ghost,
   selection, handles, constraint widget, brush ring), per-chunk three.js
   rendering of core-produced buffers (`src/render.ts`), the toolbar/panels.
@@ -42,17 +44,23 @@ and benchmark numbers.
   onto the new ring (want ∓ dir) so the surface stays continuous; a stroke is
   ONE undo op; stranded offsets are cleaned at stroke end.
 - Editor semantics: `=` extrudes only faces present at the plane; `-` carves
-  the whole rect footprint and its plane keeps marching through air; RMB is
-  reserved/unbound; Tab hands build-rect corners to sculpt selection.
+  the whole rect footprint and its plane keeps marching through air; Tab hands
+  build-rect corners to sculpt selection. Paint hygiene mirrors offset hygiene
+  in `plan_edit_changes`: newly exposed faces copy paint from the source face
+  along the extrusion axis; buried faces' paint is cleared globally. Paint
+  strokes are one op; brush topology growth leaves new faces unpainted.
 - Meshing constants (light, base color, AO curve, diagonal rule, tint) are
   the visual identity — change them only deliberately.
 
 ## UI conventions
 
-- Modes: 1 Build, 2 Sculpt. Sculpt tools M/B/F (select/smooth/draw brush,
-  Alt inverts draw). X/Y/Z blender constraints (Shift = plane), `=`/`-`
-  nudges. Camera: P orbit/fly (fly-down Q, up E/Space — Z is reserved).
-  Views: V sculpted/voxels, T textured/untextured.
+- Modes: 1 Build, 2 Sculpt, 3 Paint (paint: Q/E rotate, F/R flip, Alt
+  eyedrop, X/RMB erase; stamps pattern-lock to the face grid; entering paint
+  mode forces the Textured view). Sculpt tools M/B/F (select/smooth/draw
+  brush, Alt inverts draw; tool persists across mode switches). X/Y/Z blender
+  constraints (Shift = plane), `=`/`-` nudges. Camera: P orbit/fly (fly-down
+  Q, up E/Space — Z is reserved). Views: V sculpted/voxels, T
+  textured/untextured (textured shows paints).
 - Grid step is per-mode (`editor.gridStep` accessor; sculpt defaults 0.5).
 - Corner-handle visibility uses voxel DDA + facing test in the core. KNOWN
   imperfect; per Peter, don't polish — depth-buffer visibility arrives with

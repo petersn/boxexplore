@@ -12,6 +12,7 @@
         <span class="tb-group" id="mode-buttons">
           <button data-mode="build" title="Build mode — rect-select faces, extrude/carve (1)">Build</button>
           <button data-mode="sculpt" title="Sculpt mode — corners and brushes (2)">Sculpt</button>
+          <button data-mode="paint" title="Paint mode — assign tileset tiles to faces (3)">Paint</button>
         </span>
         <span class="tb-group">
           <label>Grid
@@ -90,8 +91,8 @@
         <div class="help-cols">
           <table>
             <tr><th colspan="2">General</th></tr>
-            <tr><td>1 / 2</td><td>Build / Sculpt mode</td></tr>
-            <tr><td>Tab</td><td>Toggle mode</td></tr>
+            <tr><td>1 / 2 / 3</td><td>Build / Sculpt / Paint mode</td></tr>
+            <tr><td>Tab</td><td>Cycle mode</td></tr>
             <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
             <tr><td>Ctrl+S / Ctrl+O</td><td>Save / Open scene</td></tr>
             <tr><td>[ / ]</td><td>Cycle sculpt snap step</td></tr>
@@ -133,6 +134,13 @@
             <tr><td>N</td><td>Noise — organic jitter on selection</td></tr>
             <tr><td>O</td><td>Reset selected corner offsets</td></tr>
             <tr><td colspan="2" class="hint">All corner offsets are hard-clamped to ±½ cell on every axis.</td></tr>
+            <tr><th colspan="2">Paint mode</th></tr>
+            <tr><td>Click / drag</td><td>Paint the palette stamp (patterns lock to the face grid)</td></tr>
+            <tr><td>Q / E</td><td>Rotate the tile</td></tr>
+            <tr><td>F / R</td><td>Flip the tile horizontally / vertically</td></tr>
+            <tr><td>Alt+click</td><td>Eyedrop a face's tile into the palette</td></tr>
+            <tr><td>X+drag / Right-click</td><td>Erase paint</td></tr>
+            <tr><td colspan="2" class="hint">Paints show in the Textured view and follow extrusions/carves.</td></tr>
           </table>
         </div>
         <div class="hint">Click anywhere to close</div>
