@@ -544,3 +544,61 @@ fn ramp_climb_is_timestep_independent() {
         assert!(peak > 3.0, "climb works at dt={dt}: peak={peak}");
     }
 }
+
+#[test]
+fn huge_slab_is_box_recorded_and_undoes_exactly() {
+    use boxcore::wasm_api::World;
+    let mut w = World::new();
+    // sculpt a little hill first so the slab overlaps existing cells
+    w.fill_box_raw(-3, -2, -3, 3, 4, 3, true);
+    let before = w.cell_count();
+    assert!(w.make_slab(200, 200, 40)); // 1.6M cells, box-recorded
+    assert_eq!(w.cell_count(), 200.0 * 200.0 * 40.0 + 6.0 * 6.0 * 4.0); // + hill above y=0
+    w.undo();
+    assert_eq!(w.cell_count(), before, "undo restores the pre-slab world exactly");
+    assert!(w.get_cell(0, 2, 0) && w.get_cell(-3, -1, -3), "hill intact");
+    w.redo();
+    assert!(w.get_cell(99, -40, 99) && !w.get_cell(100, -1, 0));
+}
+
+#[test]
+fn camera_boom_glides_in_under_ceilings() {
+    use boxcore::physics::Phys;
+    let mut store = ChunkStore::new();
+    let offsets = Offsets::default();
+    let paints = Paints::default();
+    store.fill_box((-30, -1, -10), (40, 0, 10), true); // floor
+    store.fill_box((0, 6, -10), (40, 7, 10), true); // ceiling from x=0 onward
+    let phys = phys_for(&store, &offsets);
+    // camera boom points back-up at ~20°, player walks +x under the ceiling
+    let pitch: f32 = 0.35;
+    let dir = [-pitch.cos(), pitch.sin(), 0.0];
+    let mut prev = f32::NAN;
+    let mut max_step = 0.0f32;
+    for i in 0..60 {
+        let x = -10.0 + i as f32 * 0.5; // -10 → 20
+        let out = phys.camera_boom([x, 2.9, 0.0], dir, 16.0);
+        let (boom, dmax) = (out[0], out[3]);
+        assert!(boom <= dmax + 1e-3, "never exceeds line of sight");
+        if prev.is_finite() {
+            max_step = max_step.max((boom - prev).abs());
+        }
+        prev = boom;
+    }
+    let free = phys.camera_boom([-10.0, 2.9, 0.0], dir, 16.0)[0];
+    assert!((free - 16.0).abs() < 1e-3, "open field boom = max: {free}");
+    // deep under the ceiling: settled AT the thin line-of-sight distance
+    // (not the hyper-conservative fat-sphere distance)
+    let deep = phys.camera_boom([14.0, 2.9, 0.0], dir, 16.0);
+    assert!(
+        (deep[0] - deep[3]).abs() < 0.05 && deep[0] < 9.0,
+        "settles at the under-ceiling LoS: boom={} dmax={}",
+        deep[0],
+        deep[3]
+    );
+    // and the walk from open field to settled is a glide, never a snap
+    assert!(
+        max_step < 1.0,
+        "boom changes gradually while walking (max step {max_step})"
+    );
+}

@@ -384,6 +384,16 @@ export class WorldHandle {
     return this.raw.camera_clearance(focus.x, focus.y, focus.z, dir.x, dir.y, dir.z, dist, radius);
   }
 
+  /** Stateless boom length: cone-cast over sphere radii (Phys::camera_boom). */
+  cameraBoom(
+    focus: Vec3,
+    dir: Vec3,
+    dist: number,
+  ): { boom: number; rstar: number; dmin: number; dmax: number; rmin: number; rmax: number; k: number } {
+    const v = this.raw.camera_boom(focus.x, focus.y, focus.z, dir.x, dir.y, dir.z, dist);
+    return { boom: v[0], rstar: v[1], dmin: v[2], dmax: v[3], rmin: v[4], rmax: v[5], k: v[6] };
+  }
+
   // -- io ---------------------------------------------------------------------------
 
   /** The doc as a plain object: { cells: string[], shifts: {...} }. */

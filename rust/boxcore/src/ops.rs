@@ -20,14 +20,26 @@ use std::collections::BinaryHeap;
 pub struct EditOp {
     pub added: Vec<i64>,
     pub removed: Vec<i64>,
+    /// Bulk fills recorded as regions, not per-cell diffs — a 1000³ slab
+    /// costs an undo record of three ints plus whatever it overwrote.
+    pub boxes: Vec<BoxFill>,
     pub shifts: Vec<(i64, Option<V3>, Option<V3>)>, // key, before, after
     pub paints: Vec<((i64, u8), Option<u32>, Option<u32>)>, // (cell, dir), before, after
+}
+
+/// A region set solid by an op. `prev` are the cells that were ALREADY
+/// solid before (undo refills exactly those after clearing the box).
+pub struct BoxFill {
+    pub min: IV,
+    pub max: IV,
+    pub prev: Vec<i64>,
 }
 
 impl EditOp {
     pub fn is_empty(&self) -> bool {
         self.added.is_empty()
             && self.removed.is_empty()
+            && self.boxes.is_empty()
             && self.shifts.is_empty()
             && self.paints.is_empty()
     }
@@ -41,6 +53,9 @@ pub fn apply_op(
     forward: bool,
 ) {
     if forward {
+        for b in &op.boxes {
+            store.fill_box(b.min, b.max, true);
+        }
         for k in &op.removed {
             store.set(unpack(*k), false);
         }
@@ -56,6 +71,12 @@ pub fn apply_op(
             store.dirty.insert(cpos_of(unpack(*ck)));
         }
     } else {
+        for b in &op.boxes {
+            store.fill_box(b.min, b.max, false);
+            for k in &b.prev {
+                store.set(unpack(*k), true);
+            }
+        }
         for k in &op.added {
             store.set(unpack(*k), false);
         }
@@ -715,6 +736,7 @@ pub fn extrude_rect(
         Some((sd[0], sd[1], sd[2])),
     );
     let op = EditOp {
+        boxes: vec![],
         added: added.iter().map(|c| pack(*c)).collect(),
         removed: removed.iter().map(|c| pack(*c)).collect(),
         shifts,
@@ -786,6 +808,7 @@ pub fn seed_voxel(store: &mut ChunkStore, offsets: &mut Offsets, paints: &mut Pa
     let cell = (0, y, 0);
     let (shifts, paint_changes) = plan_edit_changes(store, offsets, paints, &[cell], &[], None);
     let op = EditOp {
+        boxes: vec![],
         added: vec![pack(cell)],
         removed: vec![],
         shifts,
@@ -796,7 +819,9 @@ pub fn seed_voxel(store: &mut ChunkStore, offsets: &mut Offsets, paints: &mut Pa
 }
 
 /// One undoable op: an sx × sz slab, `thickness` cells deep, centered on the
-/// origin in x/z with its top surface at y = 0.
+/// origin in x/z with its top surface at y = 0. Runs in O(chunks + existing
+/// offsets/paints), never O(volume) — a 1000×1000 ground plane is instant
+/// and its undo record is the box plus whatever it overlapped.
 pub fn make_slab(
     store: &mut ChunkStore,
     offsets: &mut Offsets,
@@ -805,28 +830,54 @@ pub fn make_slab(
     sz: i32,
     thickness: i32,
 ) -> EditOp {
-    let (sx, sz, t) = (sx.clamp(1, 2048), sz.clamp(1, 2048), thickness.clamp(1, 256));
-    let x0 = -(sx / 2);
-    let z0 = -(sz / 2);
-    let mut added = Vec::new();
-    for x in x0..x0 + sx {
-        for y in -t..0 {
-            for z in z0..z0 + sz {
-                if !store.get((x, y, z)) {
-                    added.push((x, y, z));
-                }
-            }
+    let (sx, sz, t) = (sx.clamp(1, 4096), sz.clamp(1, 4096), thickness.clamp(1, 1024));
+    let min = (-(sx / 2), -t, -(sz / 2));
+    let max = (min.0 + sx, 0, min.2 + sz);
+    let prev = store.cells_in_box(min, max);
+    if prev.len() as i64 == sx as i64 * sz as i64 * t as i64 {
+        return EditOp {
+            boxes: vec![],
+            added: vec![],
+            removed: vec![],
+            shifts: vec![],
+            paints: vec![],
+        }; // already solid — no-op
+    }
+    store.fill_box(min, max, true);
+
+    // hygiene: the fill may bury corners and faces. Sweep the (sparse)
+    // offset/paint maps for entries no longer on the surface — same global
+    // stale rule the per-cell planner enforces.
+    let mut shift_changes = Vec::new();
+    for (k, v) in offsets.map.iter() {
+        if !on_surface(store, unpack(*k)) {
+            shift_changes.push((*k, Some(*v), None));
         }
     }
-    let (shifts, paint_changes) = plan_edit_changes(store, offsets, paints, &added, &[], None);
-    let op = EditOp {
-        added: added.iter().map(|c| pack(*c)).collect(),
+    for (k, _, _) in &shift_changes {
+        offsets.set(unpack(*k), None);
+        store.mark_lattice_dirty(unpack(*k));
+    }
+    let mut paint_changes = Vec::new();
+    for ((ck, d), p) in paints.map.iter() {
+        let cell = unpack(*ck);
+        let dir = crate::DIRS[*d as usize];
+        let exposed = store.get(cell) && !store.get(crate::add_iv(cell, dir));
+        if !exposed {
+            paint_changes.push(((*ck, *d), Some(*p), None));
+        }
+    }
+    for ((ck, d), _, _) in &paint_changes {
+        paints.set(*ck, *d, None);
+    }
+
+    EditOp {
+        boxes: vec![BoxFill { min, max, prev }],
+        added: vec![],
         removed: vec![],
-        shifts,
+        shifts: shift_changes,
         paints: paint_changes,
-    };
-    apply_op(store, offsets, paints, &op, true);
-    op
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,6 +1187,7 @@ impl Stroke {
             store.mark_lattice_dirty(l);
         }
         let mut op = EditOp {
+            boxes: vec![],
             added: self.cells_added.iter().copied().collect(),
             removed: self.cells_removed.iter().copied().collect(),
             shifts: Vec::new(),

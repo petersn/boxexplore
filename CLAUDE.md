@@ -57,6 +57,9 @@ and benchmark numbers.
 - Modes: 1 Build, 2 Sculpt, 3 Paint, plus Play (G/Esc, `editor.playing`).
   Toolbar "Slab" prompts for X/Z/thickness and lays ground centered at the
   origin, top at y=0 (`ops::make_slab`, one undo op; New scene lays 16×16×2).
+  Bulk fills are box-recorded in EditOp (`BoxFill` + `prev` overlap cells) and
+  run O(chunks + offsets + paints), never O(volume) — 500³ ≈ 33 ms. fill_box
+  writes partial-chunk bitmaps directly (no per-cell dirty marking).
   Build panel has the LOD-distance slider (`renderer.lodScale`).
   Paint: radius brush for single tiles, whole-block placement for multi-tile
   stamps (grid-locked, R rotate / F flip — Q/E are the fly camera's,
@@ -92,10 +95,12 @@ and benchmark numbers.
   unwalkable ones are walls. "Stable implies jumpable": resting unwalkably
   (wedge, ledge lip — `rest_ticks`) or sliding grants a tech-out jump
   (weaker hop + kick along the brace normal + brief control lockout, so
-  steep faces can't be climbed by jump-mashing). Chase camera: predictive
-  whisker spherecasts (velocity lookahead + steeper pitches) feed an
-  asymmetrically smoothed boom (fast in, slow out), hard-floored by true
-  line of sight — no snap-in when walking under ceilings. `src/play.ts` is only input → wish dir,
+  steep faces can't be climbed by jump-mashing). Chase camera boom is STATELESS
+  (`Phys::camera_boom`, no smoothing/history): a discretized cone cast —
+  min over sphere radii of clearance(r) + K·(r−RMIN) — glides in near
+  ceilings/walls and settles at the thin line-of-sight distance (tested:
+  camera_boom_glides_in_under_ceilings). C in play mode shows the live
+  radius→distance debug plot. `src/play.ts` is only input → wish dir,
   the body mesh, and the chase camera: smoothed focus point (swivel stays
   snappy), boom clamped by a backward spherecast (`viewport.distClamp`).
   Editor suspends fly keys + overlays while playing.

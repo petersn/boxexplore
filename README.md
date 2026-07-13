@@ -92,8 +92,11 @@ organic terrain without breaking the seal.
   stand on is stable enough to jump from: wedged or slipping players can
   always tech out (a hop that kicks off the surface, SM64-style). Drag/
   wheel orbit the chase camera; its focus point is smoothed while swivel
-  stays snappy, and predictive whisker spherecasts ease the boom in before
-  line of sight breaks — no snap-in when you walk under a ceiling.
+  stays snappy, and the boom length is a stateless cone-cast (spherecasts
+  over a ladder of radii, each traded against distance along a fixed
+  linear trend) — walking under a ceiling glides the camera in smoothly
+  and settles at the true line-of-sight distance, never snapping. Press
+  `C` for a live plot of the radius→distance curve behind the decision.
   `G`/`Esc` returns to editing.
 
 The camera has two modes (`P` toggles): **orbit** (CAD-style pivot) and **fly**

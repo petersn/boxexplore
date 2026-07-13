@@ -306,6 +306,7 @@ export class Editor {
       this.playing = false;
       if (this.play) {
         this.viewport.scene.remove(this.play.group);
+        this.play.dispose();
         this.play = null;
       }
       this.viewport.suspendFly = false;
@@ -670,6 +671,7 @@ export class Editor {
       if (this.playing) {
         const low = e.key.toLowerCase();
         if (low === 'g' || low === 'escape') this.togglePlay();
+        else if (low === 'c') this.play?.togglePlot();
         if (low === ' ') e.preventDefault();
         return;
       }

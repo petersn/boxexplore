@@ -29,6 +29,24 @@ export class World {
         return ret;
     }
     /**
+     * Stateless chase-camera boom (radius-parameterized clearance profile;
+     * see `Phys::camera_boom`). Returns [boom, r*, dmin, dmax, rmin, rmax].
+     * @param {number} fx
+     * @param {number} fy
+     * @param {number} fz
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @param {number} dist
+     * @returns {Float32Array}
+     */
+    camera_boom(fx, fy, fz, dx, dy, dz, dist) {
+        const ret = wasm.world_camera_boom(this.__wbg_ptr, fx, fy, fz, dx, dy, dz, dist);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * How far the chase camera can pull back before hitting geometry.
      * @param {number} fx
      * @param {number} fy

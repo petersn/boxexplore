@@ -10,6 +10,11 @@ export class World {
      */
     approx_bytes(): number;
     /**
+     * Stateless chase-camera boom (radius-parameterized clearance profile;
+     * see `Phys::camera_boom`). Returns [boom, r*, dmin, dmax, rmin, rmax].
+     */
+    camera_boom(fx: number, fy: number, fz: number, dx: number, dy: number, dz: number, dist: number): Float32Array;
+    /**
      * How far the chase camera can pull back before hitting geometry.
      */
     camera_clearance(fx: number, fy: number, fz: number, dx: number, dy: number, dz: number, dist: number, radius: number): number;
@@ -131,6 +136,7 @@ export interface InitOutput {
     readonly __wbg_world_free: (a: number, b: number) => void;
     readonly world_all_chunk_positions: (a: number) => [number, number];
     readonly world_approx_bytes: (a: number) => number;
+    readonly world_camera_boom: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly world_camera_clearance: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
     readonly world_cell_count: (a: number) => number;
     readonly world_clear: (a: number) => void;

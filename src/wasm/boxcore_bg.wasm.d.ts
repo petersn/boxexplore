@@ -4,6 +4,7 @@ export const memory: WebAssembly.Memory;
 export const __wbg_world_free: (a: number, b: number) => void;
 export const world_all_chunk_positions: (a: number) => [number, number];
 export const world_approx_bytes: (a: number) => number;
+export const world_camera_boom: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
 export const world_camera_clearance: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
 export const world_cell_count: (a: number) => number;
 export const world_clear: (a: number) => void;

@@ -6,20 +6,19 @@ import type { Viewport } from './viewport';
 const RADIUS = 0.9;
 const HEIGHT = 3.5;
 const EYE_HEIGHT = 2.9; // camera focus height on the body
-const CAM_RADIUS = 0.5; // spherecast radius for the chase camera
 const FOCUS_SMOOTH = 10; // 1/s — how fast the camera focus catches up
-const BOOM_IN = 9; // 1/s — pull-in toward a shorter clearance (fast)
-const BOOM_OUT = 1.6; // 1/s — ease back out when space opens up (slow)
-const LOOKAHEAD = [0.3, 0.6]; // s — predicted focus positions along velocity
-const WHISKERS = [0.12, 0.24]; // rad — steeper-pitch probes (ceilings ahead)
+const PLOT_SAMPLES = 36; // debug plot: clearance curve resolution
 
 /**
  * Third-person play mode shell. All physics — collision, gravity, jumping,
  * slopes, stepping — runs in the Rust core (boxcore::physics, rapier3d
  * queries over per-chunk trimeshes). This class only maps input to a wish
  * direction, mirrors the resulting pose onto a mesh, and drives the chase
- * camera: the focus point is smoothed (swivel stays snappy) and the boom is
- * clamped by a backward spherecast so the camera never enters geometry.
+ * camera: the focus point is smoothed (swivel stays snappy) and the boom
+ * length is the core's stateless cone-cast (`camera_boom`) — same position
+ * and view always give the same distance, gliding in near ceilings/walls
+ * instead of snapping. Press C in play mode for the radius→distance debug
+ * plot behind that decision.
  */
 export class PlayController {
   readonly group = new THREE.Group();
@@ -29,8 +28,8 @@ export class PlayController {
   private body: THREE.Mesh;
   private facing = 0;
   private focus = new THREE.Vector3();
-  private boom = -1; // smoothed boom length (-1 = uninitialized)
-  private lastPos = new THREE.Vector3();
+  private plot: HTMLCanvasElement | null = null;
+  private plotOn = true;
 
   constructor(private world: WorldHandle) {
     const geo = new THREE.CylinderGeometry(RADIUS, RADIUS, HEIGHT, 24);
@@ -56,10 +55,20 @@ export class PlayController {
   spawnAt(x: number, z: number): void {
     const p = this.world.playerSpawn(x, z);
     this.pos.set(p.x, p.y, p.z);
-    this.lastPos.copy(this.pos);
     this.focus.set(p.x, p.y + EYE_HEIGHT, p.z);
-    this.boom = -1;
     this.syncMesh();
+  }
+
+  /** C key: show/hide the camera-boom debug plot. */
+  togglePlot(): void {
+    this.plotOn = !this.plotOn;
+    if (this.plot) this.plot.style.display = this.plotOn ? 'block' : 'none';
+  }
+
+  /** Remove DOM leftovers when leaving play mode. */
+  dispose(): void {
+    this.plot?.remove();
+    this.plot = null;
   }
 
   update(dt: number, held: (k: string) => boolean, viewport: Viewport): void {
@@ -77,7 +86,6 @@ export class PlayController {
     if (wish.lengthSq() > 0) wish.normalize();
 
     // -- step the Rust controller
-    this.lastPos.copy(this.pos);
     const r = this.world.playerUpdate(dt, wish.x, wish.z, held(' '));
     this.pos.set(r.pos.x, r.pos.y, r.pos.z);
     this.facing = r.facing;
@@ -89,38 +97,113 @@ export class PlayController {
     this.focus.lerp(want, 1 - Math.exp(-FOCUS_SMOOTH * dt));
     viewport.target.copy(this.focus);
 
-    // -- boom length: predictive whisker casts + asymmetric smoothing.
-    // The primary spherecast is the hard line-of-sight floor (never clip);
-    // the extra samples see occlusion COMING — the focus a beat ahead along
-    // our velocity, and slightly steeper boom pitches that graze ceilings
-    // first — so the camera glides in before LoS actually breaks instead
-    // of snapping the moment it does.
-    const dir = (pitch: number, yaw: number) => ({
-      x: Math.cos(pitch) * Math.cos(yaw),
-      y: Math.sin(pitch),
-      z: Math.cos(pitch) * Math.sin(yaw),
-    });
+    // -- boom length: the core's stateless cone-cast over sphere radii
+    const cp2 = Math.cos(viewport.pitch);
+    const back = {
+      x: cp2 * Math.cos(viewport.yaw),
+      y: Math.sin(viewport.pitch),
+      z: cp2 * Math.sin(viewport.yaw),
+    };
     const fp = { x: this.focus.x, y: this.focus.y, z: this.focus.z };
-    const back = dir(viewport.pitch, viewport.yaw);
-    const clear = (from: { x: number; y: number; z: number }, d: typeof back) =>
-      this.world.cameraClearance(from, d, viewport.dist, CAM_RADIUS);
+    const cb = this.world.cameraBoom(fp, back, viewport.dist);
+    viewport.distClamp = cb.boom;
+    if (this.plotOn) this.drawPlot(fp, back, viewport.dist, cb);
+  }
 
-    const primary = clear(fp, back);
-    let target = primary;
-    const vx = (this.pos.x - this.lastPos.x) / Math.max(dt, 1e-4);
-    const vz = (this.pos.z - this.lastPos.z) / Math.max(dt, 1e-4);
-    for (const t of LOOKAHEAD) {
-      target = Math.min(target, clear({ x: fp.x + vx * t, y: fp.y, z: fp.z + vz * t }, back));
+  /**
+   * Debug plot of the camera decision: the sampled clearance-vs-radius
+   * curve (cyan), dmin/dmax anchor levels, the fixed-slope trend line
+   * through the winning sample (its intercept at rmin IS the boom), and
+   * the chosen point. Everything camera_boom sees, drawn per frame.
+   */
+  private drawPlot(
+    fp: { x: number; y: number; z: number },
+    back: { x: number; y: number; z: number },
+    dist: number,
+    cb: { boom: number; rstar: number; dmin: number; dmax: number; rmin: number; rmax: number; k: number },
+  ): void {
+    if (!this.plot) {
+      this.plot = document.createElement('canvas');
+      this.plot.width = 320;
+      this.plot.height = 200;
+      this.plot.style.cssText =
+        'position:absolute;right:12px;bottom:34px;background:rgba(12,14,18,0.82);' +
+        'border:1px solid #2a2f3a;border-radius:4px;pointer-events:none;z-index:30;';
+      document.getElementById('viewport-wrap')!.appendChild(this.plot);
+      this.plot.style.display = this.plotOn ? 'block' : 'none';
     }
-    for (const a of WHISKERS) {
-      target = Math.min(target, clear(fp, dir(Math.min(viewport.pitch + a, 1.55), viewport.yaw)));
-    }
+    const g = this.plot.getContext('2d')!;
+    const W = this.plot.width;
+    const H = this.plot.height;
+    const mL = 34;
+    const mR = 10;
+    const mT = 16;
+    const mB = 24;
+    const rSpan = cb.rmax - cb.rmin;
+    const X = (r: number) => mL + ((r - cb.rmin) / rSpan) * (W - mL - mR);
+    const Y = (d: number) => H - mB - (Math.min(d, dist) / dist) * (H - mT - mB);
+    g.clearRect(0, 0, W, H);
+    g.font = '10px monospace';
 
-    if (this.boom < 0) this.boom = target;
-    const k = target < this.boom ? BOOM_IN : BOOM_OUT;
-    this.boom += (target - this.boom) * (1 - Math.exp(-k * dt));
-    this.boom = Math.min(this.boom, primary); // LoS is absolute
-    viewport.distClamp = this.boom;
+    // axes
+    g.strokeStyle = '#3a4150';
+    g.beginPath();
+    g.moveTo(mL, mT);
+    g.lineTo(mL, H - mB);
+    g.lineTo(W - mR, H - mB);
+    g.stroke();
+    g.fillStyle = '#8a93a5';
+    g.fillText('radius →', W - 60, H - 8);
+    g.fillText(cb.rmin.toFixed(1), mL - 4, H - 10);
+    g.fillText(cb.rmax.toFixed(1), W - mR - 16, H - 10);
+
+    // dmin / dmax levels
+    g.strokeStyle = '#5a6274';
+    g.setLineDash([3, 3]);
+    for (const [d, label] of [
+      [cb.dmax, `dmax ${cb.dmax.toFixed(1)}`],
+      [cb.dmin, `dmin ${cb.dmin.toFixed(1)}`],
+    ] as Array<[number, string]>) {
+      g.beginPath();
+      g.moveTo(mL, Y(d));
+      g.lineTo(W - mR, Y(d));
+      g.stroke();
+      g.fillText(label, mL + 4, Y(d) - 3);
+    }
+    g.setLineDash([]);
+
+    // sampled clearance curve
+    g.strokeStyle = '#57d3f2';
+    g.beginPath();
+    for (let i = 0; i <= PLOT_SAMPLES; i++) {
+      const r = cb.rmin + (rSpan * i) / PLOT_SAMPLES;
+      const d = this.world.cameraClearance(fp, back, dist, r);
+      if (i === 0) g.moveTo(X(r), Y(d));
+      else g.lineTo(X(r), Y(d));
+    }
+    g.stroke();
+
+    // fixed-slope trend line through the winning sample: d = boom − k·(r − rmin)
+    g.strokeStyle = '#ffb454';
+    g.setLineDash([5, 3]);
+    g.beginPath();
+    g.moveTo(X(cb.rmin), Y(cb.boom));
+    const rEnd = Math.min(cb.rmax, cb.rmin + cb.boom / cb.k);
+    g.lineTo(X(rEnd), Y(cb.boom - cb.k * (rEnd - cb.rmin)));
+    g.stroke();
+    g.setLineDash([]);
+
+    // chosen sample + resulting boom
+    const dStar = this.world.cameraClearance(fp, back, dist, cb.rstar);
+    g.fillStyle = '#ffb454';
+    g.beginPath();
+    g.arc(X(cb.rstar), Y(dStar), 4, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = '#ffe08a';
+    g.beginPath();
+    g.arc(X(cb.rmin), Y(cb.boom), 4, 0, Math.PI * 2);
+    g.fill();
+    g.fillText(`boom ${cb.boom.toFixed(1)}  r* ${cb.rstar.toFixed(2)}`, mL + 4, 12);
   }
 
   private syncMesh(): void {

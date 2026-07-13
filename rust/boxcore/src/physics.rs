@@ -192,6 +192,51 @@ impl Phys {
         }
     }
 
+    /// Stateless chase-camera boom length (no smoothing, no history — the
+    /// same player position and view always give the same camera distance).
+    ///
+    /// Spherecast the boom direction at a ladder of radii from RMIN (the
+    /// camera's physical radius) to RMAX. Each sample is judged against a
+    /// fixed-slope linear trend: a hit at radius r and distance d costs
+    /// `d + K·(r − RMIN)` — trading K units of boom length per unit of
+    /// obstacle margin. The boom is the minimum such cost, i.e. the lowest
+    /// point the clearance-vs-radius curve dips below the trend line, read
+    /// back at RMIN. This is a discretized CONE cast (half-angle atan(1/K)):
+    /// as the player walks toward a ceiling edge, the largest radius that
+    /// still slips past shrinks continuously, so the boom glides from the
+    /// open-field distance down to the under-ceiling line-of-sight distance
+    /// with no snap — and settles AT that distance, since versus a surface
+    /// parallel to the boom the credit K outweighs the clearance loss.
+    ///
+    /// Returns [boom, r*, dmin, dmax, RMIN, RMAX, K] (extras feed the
+    /// in-game debug plot).
+    pub fn camera_boom(&self, focus: V3, dir: V3, max_dist: f32) -> [f32; 7] {
+        const RMIN: f32 = 0.4; // ≥ this ⇒ the camera sphere itself never clips
+        const RMAX: f32 = 2.5;
+        const SAMPLES: usize = 12;
+        // cone reaches RMAX at full boom length
+        let k = max_dist.max(4.0) / (RMAX - RMIN);
+        let dmax = self.clearance(focus, dir, max_dist, RMIN);
+        let mut dmin = dmax;
+        let mut boom = dmax;
+        let mut rstar = RMIN;
+        for i in 1..=SAMPLES {
+            let r = RMIN + (RMAX - RMIN) * i as f32 / SAMPLES as f32;
+            let d = self.clearance(focus, dir, max_dist, r);
+            if i == SAMPLES {
+                dmin = d;
+            }
+            let cost = d + k * (r - RMIN);
+            if cost < boom {
+                boom = cost;
+                rstar = r;
+            }
+        }
+        // never usefully closer than ~1 unit (unless the pocket truly is)
+        boom = boom.max(1.0f32.min(dmax)).min(max_dist);
+        [boom, rstar, dmin, dmax, RMIN, RMAX, k]
+    }
+
     /// Chunk colliders whose 32³ cell range can overlap the given AABB.
     fn handles_near(&self, lo: V3, hi: V3) -> Vec<ColliderHandle> {
         let c0 = (

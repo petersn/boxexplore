@@ -184,14 +184,46 @@ impl ChunkStore {
                             self.cell_count -= before;
                         }
                     } else {
-                        for x in x0..x1 {
-                            for y in y0..y1 {
-                                for z in z0..z1 {
-                                    self.set((x, y, z), v);
+                        // partial coverage: write the bitmap directly — the
+                        // chunk-level dirty below covers invalidation, so a
+                        // per-cell set() (27 dirty inserts each) would waste
+                        // hundreds of millions of hash ops on big fills
+                        let need_chunk = v || self.chunks.contains_key(&cp);
+                        if need_chunk {
+                            let chunk = self.chunks.entry(cp).or_insert_with(|| {
+                                Chunk::Bits(Box::new([0u64; WORDS]))
+                            });
+                            if matches!(chunk, Chunk::Full) {
+                                if v {
+                                    // already all set — nothing to do
+                                } else {
+                                    *chunk = Chunk::Bits(Box::new([u64::MAX; WORDS]));
                                 }
                             }
+                            let mut delta: i64 = 0;
+                            if let Chunk::Bits(b) = chunk {
+                                for x in x0..x1 {
+                                    for y in y0..y1 {
+                                        for z in z0..z1 {
+                                            let li = lidx((x, y, z));
+                                            let (w, m) = (li >> 6, 1u64 << (li & 63));
+                                            let was = b[w] & m != 0;
+                                            if was != v {
+                                                if v {
+                                                    b[w] |= m;
+                                                    delta += 1;
+                                                } else {
+                                                    b[w] &= !m;
+                                                    delta -= 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            self.cell_count = (self.cell_count as i64 + delta) as u64;
+                            self.normalize(cp);
                         }
-                        self.normalize(cp);
                     }
                     // conservatively dirty this chunk and its neighbors
                     for dx in -1..=1 {
@@ -205,6 +237,43 @@ impl ChunkStore {
                 }
             }
         }
+    }
+
+    /// All solid cells inside [min, max) as packed keys. Skips absent
+    /// chunks entirely, so scanning a huge empty region is O(present chunks).
+    pub fn cells_in_box(&self, min: IV, max: IV) -> Vec<i64> {
+        let mut out = Vec::new();
+        if min.0 >= max.0 || min.1 >= max.1 || min.2 >= max.2 {
+            return out;
+        }
+        let clo = cpos_of(min);
+        let chi = cpos_of((max.0 - 1, max.1 - 1, max.2 - 1));
+        for cx in clo.0..=chi.0 {
+            for cy in clo.1..=chi.1 {
+                for cz in clo.2..=chi.2 {
+                    let Some(ch) = self.chunks.get(&(cx, cy, cz)) else {
+                        continue;
+                    };
+                    let base = (cx * S, cy * S, cz * S);
+                    let x0 = min.0.max(base.0);
+                    let y0 = min.1.max(base.1);
+                    let z0 = min.2.max(base.2);
+                    let x1 = max.0.min(base.0 + S);
+                    let y1 = max.1.min(base.1 + S);
+                    let z1 = max.2.min(base.2 + S);
+                    for x in x0..x1 {
+                        for y in y0..y1 {
+                            for z in z0..z1 {
+                                if ch.get(lidx((x, y, z))) {
+                                    out.push(crate::pack((x, y, z)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn clear(&mut self) {
