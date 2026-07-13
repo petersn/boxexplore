@@ -218,6 +218,81 @@ fn json_roundtrip() {
 }
 
 #[test]
+fn character_controller_walks_jumps_and_climbs() {
+    use boxcore::physics::{Phys, Player};
+    let mut store = ChunkStore::new();
+    let mut offsets = Offsets::default();
+    let paints = Paints::default();
+    // floor + a 45° ramp rising +x from x=5
+    store.fill_box((-10, -1, -10), (20, 0, 10), true);
+    for i in 0..4 {
+        store.fill_box((5 + i, 0, -2), (6 + i, 1 + i, 2), true);
+    }
+    for i in 0..4 {
+        for z in -2..=2 {
+            offsets.set((5 + i, 1 + i, z), Some([0.0, -0.5, 0.0]));
+            offsets.set((6 + i, 1 + i, z), Some([0.0, 0.5, 0.0]));
+        }
+    }
+    let mut phys = Phys::new();
+    for cp in store.chunks.keys() {
+        phys.dirty.insert(*cp);
+    }
+    phys.sync(&store, &offsets, &paints);
+
+    let mut p = Player::new();
+    p.spawn_at(&phys, 0.0, 0.0);
+    // settle
+    for _ in 0..60 {
+        p.update(&phys, 1.0 / 60.0, [0.0, 0.0], false);
+    }
+    assert!(p.on_ground, "landed");
+    assert!(p.pos[1].abs() < 0.05, "on the floor: y={}", p.pos[1]);
+
+    // run +x
+    for _ in 0..40 {
+        p.update(&phys, 1.0 / 60.0, [1.0, 0.0], false);
+    }
+    assert!(p.pos[0] > 2.0, "ran forward: x={}", p.pos[0]);
+
+    // jump
+    let y0 = p.pos[1];
+    p.update(&phys, 1.0 / 60.0, [0.0, 0.0], true);
+    let mut apex = y0;
+    for _ in 0..40 {
+        p.update(&phys, 1.0 / 60.0, [0.0, 0.0], false);
+        apex = apex.max(p.pos[1]);
+    }
+    assert!(apex > y0 + 2.0, "jump apex {} (higher jump)", apex);
+
+    // climb the 45° ramp (peak height — the run continues past the top)
+    let mut peak = p.pos[1];
+    for _ in 0..150 {
+        p.update(&phys, 1.0 / 60.0, [1.0, 0.0], false);
+        peak = peak.max(p.pos[1]);
+    }
+    assert!(peak > 3.0, "climbed the ramp: peak={}", peak);
+}
+
+#[test]
+fn camera_clearance_stops_at_walls() {
+    use boxcore::physics::Phys;
+    let mut store = ChunkStore::new();
+    let offsets = Offsets::default();
+    let paints = Paints::default();
+    store.fill_box((5, -2, -5), (7, 8, 5), true); // a wall at x∈[5,7]
+    let mut phys = Phys::new();
+    for cp in store.chunks.keys() {
+        phys.dirty.insert(*cp);
+    }
+    phys.sync(&store, &offsets, &paints);
+    let d = phys.clearance([0.0, 2.0, 0.0], [1.0, 0.0, 0.0], 12.0, 0.4);
+    assert!(d < 5.0 && d > 3.5, "camera stops before the wall: {}", d);
+    let free = phys.clearance([0.0, 2.0, 0.0], [-1.0, 0.0, 0.0], 12.0, 0.4);
+    assert!((free - 12.0).abs() < 1e-3, "free direction unobstructed: {}", free);
+}
+
+#[test]
 fn paint_strokes_hygiene_and_undo() {
     use boxcore::wasm_api::World;
     let mut w = World::new();

@@ -67,8 +67,8 @@ organic terrain without breaking the seal.
 - **Paint mode (3)** — assign tileset tiles to faces, with a live textured
   preview of exactly what will land where. A single tile paints with a
   **radius** brush (sidebar slider); a multi-tile stamp places the whole
-  block, grid-locked so neighboring placements tile seamlessly, with `Q`/`E`
-  rotation and `F`/`R` flips; the **random scatter** checkbox sprays random
+  block, grid-locked so neighboring placements tile seamlessly, with `R`
+  rotation and `F` flip; the **random scatter** checkbox sprays random
   tiles from the selection with random orientations instead. Strokes fill the
   whole swept path (no gaps on fast drags), `Alt+click` eyedrops, `X+drag` or
   right-click erases (radius-aware). Paints render in the Textured view,
@@ -76,11 +76,15 @@ organic terrain without breaking the seal.
   painted wall yields more painted wall, carving into painted ground keeps
   the paint on the new floor, buried faces are cleaned up.
 
-- **Play mode (`G`)** — run around your world in third person: a capsule
+- **Play mode (`G`)** — run around your world in third person: a cylinder
   character with gravity, jumping (Space), wall sliding, half-cell auto-step,
-  and slope climbing up to 50° (collision is against the rendered displaced
-  surface, so sculpted ramps walk exactly as they look). Drag/wheel orbit the
-  chase camera; `G`/`Esc` returns to editing.
+  and slope climbing up to 50°. Physics runs in the Rust core: rapier3d BVH
+  queries (rays, capsule sweeps, spherecasts) against per-chunk trimesh
+  colliders built from the same displaced surface you see, driving a
+  hand-rolled kinematic controller — sculpted ramps walk exactly as they
+  look. Drag/wheel orbit the chase camera; its focus point is smoothed while
+  swivel stays snappy, and a backward spherecast keeps it out of geometry.
+  `G`/`Esc` returns to editing.
 
 The camera has two modes (`P` toggles): **orbit** (CAD-style pivot) and **fly**
 (Minecraft-creative-style — WASD + mouselook, no pivot). Two independent view
@@ -109,11 +113,13 @@ discussion and benchmark numbers.
 | `rust/boxcore/src/store.rs` | chunked volume + sparse clamped offsets |
 | `rust/boxcore/src/mesh.rs` | per-chunk surface extraction, AO, LOD meshes |
 | `rust/boxcore/src/ops.rs` | edit ops, hygiene, brushes, paths, visibility, undo |
+| `rust/boxcore/src/physics.rs` | rapier3d query world + character controller |
 | `rust/boxcore/src/wasm_api.rs` | the `World` facade the shell talks to |
 | `src/world.ts` | typed wrapper + change notification |
 | `src/render.ts` | per-chunk three.js meshes, dirty sync, distance LOD |
 | `src/build.ts` / `src/sculpt.ts` / `src/paint.ts` | the three editor modes (input → core calls) |
-| `src/viewport.ts` | renderer, orbit/fly camera, ray picking, grid visuals |
+| `src/play.ts` | play-mode shell: input, body mesh, chase camera |
+| `src/viewport.ts` | renderer, orbit/fly camera, ray picking |
 | `src/tileset.ts` / `src/palette.ts` | tileset canvas + stamp picker |
 | `src/editor.ts` | glue: input routing, overlays, toolbar, persistence |
 

@@ -29,6 +29,22 @@ export class World {
         return ret;
     }
     /**
+     * How far the chase camera can pull back before hitting geometry.
+     * @param {number} fx
+     * @param {number} fy
+     * @param {number} fz
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @param {number} dist
+     * @param {number} radius
+     * @returns {number}
+     */
+    camera_clearance(fx, fy, fz, dx, dy, dz, dist, radius) {
+        const ret = wasm.world_camera_clearance(this.__wbg_ptr, fx, fy, fz, dx, dy, dz, dist, radius);
+        return ret;
+    }
+    /**
      * @returns {number}
      */
     cell_count() {
@@ -337,6 +353,33 @@ export class World {
     paint_stroke_end() {
         const ret = wasm.world_paint_stroke_end(this.__wbg_ptr);
         return ret !== 0;
+    }
+    /**
+     * Drop the player onto the ground near (x, z); returns [x, y, z].
+     * @param {number} x
+     * @param {number} z
+     * @returns {Float32Array}
+     */
+    player_spawn(x, z) {
+        const ret = wasm.world_player_spawn(this.__wbg_ptr, x, z);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Step the character controller. `wish` is the camera-relative input
+     * direction. Returns [x, y, z, facing, onGround].
+     * @param {number} dt
+     * @param {number} wish_x
+     * @param {number} wish_z
+     * @param {boolean} jump
+     * @returns {Float32Array}
+     */
+    player_update(dt, wish_x, wish_z, jump) {
+        const ret = wasm.world_player_update(this.__wbg_ptr, dt, wish_x, wish_z, jump);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
     }
     /**
      * @param {number} axis

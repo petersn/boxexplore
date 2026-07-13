@@ -353,6 +353,30 @@ export class WorldHandle {
     return out;
   }
 
+  // -- play mode (physics lives in Rust; none of these touch the document) ----------
+
+  /** Drop the player onto the ground near (x, z); returns its position. */
+  playerSpawn(x: number, z: number): Vec3 {
+    const p = this.raw.player_spawn(x, z);
+    return { x: p[0], y: p[1], z: p[2] };
+  }
+
+  /** Step the character controller. Returns pos + facing + ground flag. */
+  playerUpdate(
+    dt: number,
+    wishX: number,
+    wishZ: number,
+    jump: boolean,
+  ): { pos: Vec3; facing: number; onGround: boolean } {
+    const r = this.raw.player_update(dt, wishX, wishZ, jump);
+    return { pos: { x: r[0], y: r[1], z: r[2] }, facing: r[3], onGround: r[4] > 0.5 };
+  }
+
+  /** Spherecast from `focus` along `dir`: how far the chase camera may pull back. */
+  cameraClearance(focus: Vec3, dir: Vec3, dist: number, radius: number): number {
+    return this.raw.camera_clearance(focus.x, focus.y, focus.z, dir.x, dir.y, dir.z, dist, radius);
+  }
+
   // -- io ---------------------------------------------------------------------------
 
   /** The doc as a plain object: { cells: string[], shifts: {...} }. */

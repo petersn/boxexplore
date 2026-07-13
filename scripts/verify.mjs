@@ -487,6 +487,16 @@ await page.evaluate(async (data) => {
 check('paints survive save/load', (await paints()) === beforeRT, `${await paints()} paints`);
 await page.screenshot({ path: `${SHOTS}/57-painted.png` });
 
+// R rotates, F flips; Q/E stay reserved for the fly camera
+await page.keyboard.press('3');
+await page.evaluate(() => { window.editor.modes.paint.orient = { rot: 0, flipH: false, flipV: false }; });
+await page.keyboard.press('r');
+await page.keyboard.press('f');
+await page.keyboard.press('q');
+await page.keyboard.press('e');
+const orient = await page.evaluate(() => window.editor.modes.paint.orient);
+check('R rotates and F flips the stamp (Q/E ignored)', orient.rot === 1 && orient.flipH === true && orient.flipV === false, JSON.stringify(orient));
+
 // --- 12d. play mode: land, run, jump, climb a 45° ramp -------------------------------------
 await freshScene();
 await page.evaluate(() => {
@@ -519,10 +529,15 @@ await page.keyboard.up('w');
 const ran = await page.evaluate(() => window.editor.play.pos.x);
 check('WASD runs the player', ran > 2, `x=${ran.toFixed(1)}`);
 
+// back away from the ramp base so the jump tests flat ground
+await page.keyboard.down('s');
+await page.waitForTimeout(400);
+await page.keyboard.up('s');
+await page.waitForTimeout(300);
 await page.keyboard.down(' ');
 await page.waitForTimeout(120);
 await page.keyboard.up(' ');
-await page.waitForTimeout(160);
+await page.waitForTimeout(200);
 const jumpY = await page.evaluate(() => window.editor.play.pos.y);
 check('Space jumps', jumpY > 0.8, `y=${jumpY.toFixed(2)}`);
 await page.waitForTimeout(900);
@@ -531,11 +546,25 @@ check(
   await page.evaluate(() => window.editor.play.onGround && Math.abs(window.editor.play.pos.y) < 0.05),
 );
 
+// the run continues past the ramp top, so judge the peak height reached
+await page.evaluate(() => {
+  window.__peak = 0;
+  window.__peakTimer = setInterval(() => {
+    window.__peak = Math.max(window.__peak, window.editor.play?.pos.y ?? 0);
+  }, 16);
+});
 await page.keyboard.down('w');
 await page.waitForTimeout(1800);
 await page.keyboard.up('w');
-const climbed = await page.evaluate(() => ({ x: window.editor.play.pos.x, y: window.editor.play.pos.y }));
-check('player climbs the 45° ramp', climbed.y > 3, JSON.stringify(climbed));
+const climbed = await page.evaluate(() => {
+  clearInterval(window.__peakTimer);
+  return { x: window.editor.play.pos.x, peak: window.__peak };
+});
+check('player climbs the 45° ramp', climbed.peak > 3, JSON.stringify(climbed));
+
+// chase camera: the Rust spherecast feeds the boom clamp every frame
+const clamp = await page.evaluate(() => window.editor.viewport.distClamp);
+check('camera clearance clamp is live', typeof clamp === 'number' && clamp > 0 && clamp <= 16, `clamp=${clamp}`);
 await page.screenshot({ path: `${SHOTS}/61-play.png` });
 
 await page.keyboard.press('Escape');

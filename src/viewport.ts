@@ -27,6 +27,8 @@ export class Viewport {
   yaw = -Math.PI / 4;
   pitch = 0.55;
   dist = 14;
+  /** Play mode: cap on the effective orbit distance (camera-vs-geometry). */
+  distClamp: number | null = null;
 
   /** Called every frame before render. */
   onTick: ((dt: number) => void) | null = null;
@@ -117,11 +119,12 @@ export class Viewport {
 
   private updateCamera(): void {
     if (this.mode === 'orbit') {
+      const d = this.distClamp === null ? this.dist : Math.min(this.dist, this.distClamp);
       const cp = Math.cos(this.pitch);
       this.camera.position.set(
-        this.target.x + this.dist * cp * Math.cos(this.yaw),
-        this.target.y + this.dist * Math.sin(this.pitch),
-        this.target.z + this.dist * cp * Math.sin(this.yaw),
+        this.target.x + d * cp * Math.cos(this.yaw),
+        this.target.y + d * Math.sin(this.pitch),
+        this.target.z + d * cp * Math.sin(this.yaw),
       );
       this.camera.lookAt(this.target);
     } else {

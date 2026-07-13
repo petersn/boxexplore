@@ -56,7 +56,8 @@ and benchmark numbers.
 
 - Modes: 1 Build, 2 Sculpt, 3 Paint, plus Play (G/Esc, `editor.playing`).
   Paint: radius brush for single tiles, whole-block placement for multi-tile
-  stamps (grid-locked, Q/E/F/R orient, textured preview via `setStampGhost`),
+  stamps (grid-locked, R rotate / F flip — Q/E are the fly camera's,
+  textured preview via `setStampGhost`),
   random-scatter checkbox, sweep interpolation between pointer events
   (`pickGroupAt`), X/Ctrl/RMB erase, Alt eyedrop; entering paint forces the
   Textured view. Sculpt tools M/B/F (tool persists across mode switches);
@@ -65,10 +66,15 @@ and benchmark numbers.
   constraints (Shift = plane), `=`/`-` nudges. Camera: P orbit/fly (fly-down
   Q, up E/Space — Z is reserved). Views: V sculpted/voxels, T
   textured/untextured. There is NO reference grid anymore.
-- Play mode (`src/play.ts`): third-person 0.9r×3.5h cylinder, raycast
-  collision against the rendered chunks (renderer.group), 50° max slope,
-  0.55 auto-step, chase camera = orbit camera with target locked to the
-  player. Editor suspends fly keys + overlays while playing.
+- Play mode: physics lives in Rust (`boxcore::physics` — rapier3d used as
+  a QUERY engine only: per-chunk trimesh colliders synced lazily from
+  `store.dirty_phys`, BVH ray/capsule/ball casts; the controller is
+  hand-rolled kinematics, never a rigid body). While grounded, vertical
+  velocity stays zero — slopes/steps are handled by ground snap + step-up,
+  so climbs never go ballistic. `src/play.ts` is only input → wish dir,
+  the body mesh, and the chase camera: smoothed focus point (swivel stays
+  snappy), boom clamped by a backward spherecast (`viewport.distClamp`).
+  Editor suspends fly keys + overlays while playing.
 - Grid step is per-mode (`editor.gridStep` accessor; sculpt defaults 0.5).
 - Corner-handle visibility uses voxel DDA + facing test in the core. KNOWN
   imperfect; per Peter, don't polish — depth-buffer visibility arrives with
@@ -82,7 +88,7 @@ and benchmark numbers.
 - `cargo test` in `rust/boxcore` — parity-critical core behavior.
 - `cargo run --release --bin bench` — representation benchmarks (1000³ cube,
   terrain, brush latency).
-- `node scripts/verify.mjs` with the dev server up — the 60-check end-to-end
+- `node scripts/verify.mjs` with the dev server up — the 85-check end-to-end
   suite driving the real UI via `window.editor` (world API + modes).
   Screenshots land in `/tmp/boxexplore-shots`. Always verify interactively,
   not just tsc: run the suite after ANY behavior-adjacent change.

@@ -10,6 +10,7 @@
 
 pub mod mesh;
 pub mod ops;
+pub mod physics;
 pub mod store;
 pub mod wasm_api;
 

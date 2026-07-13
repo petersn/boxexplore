@@ -4,6 +4,7 @@
 
 use crate::mesh::{self, ChunkMesh, MeshOpts};
 use crate::ops::{self, BrushTool, DragState, EditOp, History, PaintStroke, RectSel, SelectionOp, Stroke};
+use crate::physics::{Phys, Player};
 use crate::store::{pack_paint, unpack_paint, ChunkStore, Offsets, Paints};
 use crate::{unpack, IV};
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,8 @@ pub struct World {
     rng: u64,
     last_mesh: ChunkMesh,
     tileset_grid: (u32, u32),
+    phys: Phys,
+    player: Player,
 }
 
 impl Default for World {
@@ -75,6 +78,8 @@ impl World {
             rng: 0x9E3779B97F4A7C15,
             last_mesh: ChunkMesh::default(),
             tileset_grid: (8, 8),
+            phys: Phys::new(),
+            player: Player::new(),
         }
     }
 
@@ -594,6 +599,57 @@ impl World {
 
     pub fn clear_history(&mut self) {
         self.history.clear();
+    }
+
+    // -- physics + play mode ---------------------------------------------------------
+
+    /// Bring physics colliders up to date with the volume (lazy, incremental).
+    fn phys_sync(&mut self) {
+        if !self.store.dirty_phys.is_empty() {
+            for cp in self.store.dirty_phys.drain() {
+                self.phys.dirty.insert(cp);
+            }
+        }
+        self.phys.sync(&self.store, &self.offsets, &self.paints);
+    }
+
+    /// Drop the player onto the ground near (x, z); returns [x, y, z].
+    pub fn player_spawn(&mut self, x: f32, z: f32) -> Vec<f32> {
+        self.phys_sync();
+        self.player.spawn_at(&self.phys, x, z);
+        self.player.pos.to_vec()
+    }
+
+    /// Step the character controller. `wish` is the camera-relative input
+    /// direction. Returns [x, y, z, facing, onGround].
+    pub fn player_update(&mut self, dt: f32, wish_x: f32, wish_z: f32, jump: bool) -> Vec<f32> {
+        self.phys_sync();
+        self.player
+            .update(&self.phys, dt.clamp(0.0, 0.05), [wish_x, wish_z], jump);
+        vec![
+            self.player.pos[0],
+            self.player.pos[1],
+            self.player.pos[2],
+            self.player.facing,
+            if self.player.on_ground { 1.0 } else { 0.0 },
+        ]
+    }
+
+    /// How far the chase camera can pull back before hitting geometry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn camera_clearance(
+        &mut self,
+        fx: f32,
+        fy: f32,
+        fz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        dist: f32,
+        radius: f32,
+    ) -> f32 {
+        self.phys_sync();
+        self.phys.clearance([fx, fy, fz], [dx, dy, dz], dist, radius)
     }
 
     /// Approximate document heap bytes (for the status/debug display).

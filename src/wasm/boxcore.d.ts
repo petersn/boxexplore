@@ -9,6 +9,10 @@ export class World {
      * Approximate document heap bytes (for the status/debug display).
      */
     approx_bytes(): number;
+    /**
+     * How far the chase camera can pull back before hitting geometry.
+     */
+    camera_clearance(fx: number, fy: number, fz: number, dx: number, dy: number, dz: number, dist: number, radius: number): number;
     cell_count(): number;
     clear(): void;
     clear_history(): void;
@@ -66,6 +70,15 @@ export class World {
     paint_face(x: number, y: number, z: number, d: number, tx: number, ty: number, rot: number, fh: boolean, fv: boolean): boolean;
     paint_stroke_begin(): void;
     paint_stroke_end(): boolean;
+    /**
+     * Drop the player onto the ground near (x, z); returns [x, y, z].
+     */
+    player_spawn(x: number, z: number): Float32Array;
+    /**
+     * Step the character controller. `wish` is the camera-relative input
+     * direction. Returns [x, y, z, facing, onGround].
+     */
+    player_update(dt: number, wish_x: number, wish_z: number, jump: boolean): Float32Array;
     rect_corners(axis: number, sign: number, plane: number, a0: number, a1: number, b0: number, b1: number): Int32Array;
     redo(): boolean;
     reset_rect_offsets(axis: number, sign: number, plane: number, a0: number, a1: number, b0: number, b1: number): boolean;
@@ -114,6 +127,7 @@ export interface InitOutput {
     readonly __wbg_world_free: (a: number, b: number) => void;
     readonly world_all_chunk_positions: (a: number) => [number, number];
     readonly world_approx_bytes: (a: number) => number;
+    readonly world_camera_clearance: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
     readonly world_cell_count: (a: number) => number;
     readonly world_clear: (a: number) => void;
     readonly world_clear_history: (a: number) => void;
@@ -146,6 +160,8 @@ export interface InitOutput {
     readonly world_paint_face: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
     readonly world_paint_stroke_begin: (a: number) => void;
     readonly world_paint_stroke_end: (a: number) => number;
+    readonly world_player_spawn: (a: number, b: number, c: number) => [number, number];
+    readonly world_player_update: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly world_rect_corners: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly world_redo: (a: number) => number;
     readonly world_reset_rect_offsets: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;

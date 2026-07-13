@@ -35,7 +35,7 @@ const MODE_HINTS: Record<ModeName, string> = {
   sculpt: `Tools (left panel): <b>M</b> select · <b>B</b> smooth brush · <b>F</b> draw brush (<b>Alt</b> inverts) — brushes paint over a radius<br>
 Select: <b>click</b> · <b>click again</b> drags · <b>drag</b> box (<b>Shift</b> add) · <b>Ctrl/Cmd+click</b> path · <b>X/Y/Z</b> constrain (<b>Shift</b> plane) · <b>=/−</b> nudge · <b>H/U/J/N/O</b> on selection`,
   paint: `<b>Click/drag</b> paint the palette stamp onto faces (multi-tile stamps lay a grid-locked pattern)<br>
-<b>Q/E</b> rotate · <b>F/R</b> flip · <b>Alt+click</b> eyedrop · <b>X+drag</b> or <b>RMB</b> erase · geometry edits carry paint along`,
+<b>R</b> rotate · <b>F</b> flip · <b>Alt+click</b> eyedrop · <b>X+drag</b> or <b>RMB</b> erase · geometry edits carry paint along`,
 };
 
 export class Editor {
@@ -303,6 +303,7 @@ export class Editor {
         this.play = null;
       }
       this.viewport.suspendFly = false;
+      this.viewport.distClamp = null;
       const c = this.savedCamera;
       if (c) {
         this.viewport.setCameraMode(c.mode);
@@ -326,10 +327,10 @@ export class Editor {
     this.viewport.setCameraMode('orbit');
     this.viewport.suspendFly = true;
     this.playing = true;
-    this.play = new PlayController(this.renderer);
+    this.play = new PlayController(this.world);
     this.viewport.scene.add(this.play.group);
     this.play.spawnAt(this.viewport.target.x, this.viewport.target.z);
-    this.viewport.dist = 12;
+    this.viewport.dist = 16;
     this.viewport.pitch = Math.max(0.25, this.viewport.pitch);
     this.setGhost(null);
     this.setStampGhost(null);

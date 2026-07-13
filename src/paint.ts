@@ -27,7 +27,7 @@ interface StampLayout {
  * - Single tile selected: the radius slider paints every face within reach
  *   (a real brush); sweeps fill the whole path between pointer events.
  * - Multi-tile stamp: places the whole block, grid-locked so neighboring
- *   placements tile seamlessly; Q/E/F/R rotate/flip the block, and a live
+ *   placements tile seamlessly; R/F rotate/flip the block, and a live
  *   textured preview shows exactly what will land where.
  * - Random scatter: each face in the radius gets a random tile from the
  *   selection with a random orientation — for organic variety.
@@ -277,22 +277,15 @@ export class PaintMode {
     ed.setStampGhost(quads.length ? { quads, uvs } : null);
   }
 
+  // R rotates, F flips — Q/E are reserved for fly-camera up/down.
   key(e: KeyboardEvent): boolean {
     switch (e.key.toLowerCase()) {
-      case 'q':
-        this.orient.rot = ((this.orient.rot + 3) % 4) as PaintOrient['rot'];
-        this.refreshPreview();
-        return true;
-      case 'e':
+      case 'r':
         this.orient.rot = ((this.orient.rot + 1) % 4) as PaintOrient['rot'];
         this.refreshPreview();
         return true;
       case 'f':
         this.orient.flipH = !this.orient.flipH;
-        this.refreshPreview();
-        return true;
-      case 'r':
-        this.orient.flipV = !this.orient.flipV;
         this.refreshPreview();
         return true;
     }

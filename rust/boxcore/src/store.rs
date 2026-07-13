@@ -44,6 +44,8 @@ pub struct ChunkStore {
     /// Chunks whose mesh needs rebuilding (edits mark the 3×3×3 cell
     /// neighborhood's chunks, since AO reaches across chunk borders).
     pub dirty: FxHashSet<IV>,
+    /// Same, but for physics colliders (drained independently).
+    pub dirty_phys: FxHashSet<IV>,
     cell_count: u64,
 }
 
@@ -71,6 +73,7 @@ impl ChunkStore {
             for y in lo.1..=hi.1 {
                 for z in lo.2..=hi.2 {
                     self.dirty.insert((x, y, z));
+                    self.dirty_phys.insert((x, y, z));
                 }
             }
         }
@@ -84,6 +87,7 @@ impl ChunkStore {
             for y in lo.1..=hi.1 {
                 for z in lo.2..=hi.2 {
                     self.dirty.insert((x, y, z));
+                    self.dirty_phys.insert((x, y, z));
                 }
             }
         }
@@ -194,6 +198,7 @@ impl ChunkStore {
                         for dy in -1..=1 {
                             for dz in -1..=1 {
                                 self.dirty.insert((cx + dx, cy + dy, cz + dz));
+                                self.dirty_phys.insert((cx + dx, cy + dy, cz + dz));
                             }
                         }
                     }
@@ -210,6 +215,7 @@ impl ChunkStore {
                 for dy in -1..=1 {
                     for dz in -1..=1 {
                         self.dirty.insert((cp.0 + dx, cp.1 + dy, cp.2 + dz));
+                        self.dirty_phys.insert((cp.0 + dx, cp.1 + dy, cp.2 + dz));
                     }
                 }
             }
