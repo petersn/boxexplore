@@ -1,14 +1,13 @@
 import * as THREE from 'three';
 import { BuildMode } from './build';
-import { axisFrame, frameLocal } from './frame';
 import { downloadText, loadScene, serializeScene } from './io';
-import { type Quad, buildOutlineGeometry, buildQuadGeometry } from './meshbuilder';
+import { type Quad, buildOutlineGeometry, buildQuadGeometry, buildTexturedQuadGeometry } from './meshbuilder';
 import { PaintMode } from './paint';
 import { Palette, type Stamp } from './palette';
 import { ChunkRenderer } from './render';
 import { SculptMode, type SculptTool } from './sculpt';
 import { Tileset } from './tileset';
-import { type Vec3, add, dot, mul, norm, sub } from './vec';
+import type { Vec3 } from './vec';
 import { Viewport } from './viewport';
 import type { FaceRef, RectSel, WorldHandle } from './world';
 
@@ -55,6 +54,8 @@ export class Editor {
   texView: 'textured' | 'untextured' = 'textured';
   /** Spatial brush settings (sculpt mode's Smooth/Draw tools). */
   brush = { radius: 2.5, strength: 0.5, topo: false };
+  /** Paint brush settings: radius (0 = single face) and random scatter. */
+  paintBrush = { radius: 0, scatter: false };
 
   /** Grid snap step is per-mode: sculpt work defaults finer than cell layout. */
   private gridStepByMode: Record<ModeName, number> = { build: 1, sculpt: 0.5, paint: 1 };
@@ -77,7 +78,8 @@ export class Editor {
   private vertPoints: THREE.Points;
   private constraintLines: THREE.LineSegments;
   private brushRing: THREE.LineLoop;
-  private lastGridKey = '';
+  private stampGhostMesh: THREE.Mesh;
+  private stampGhostMat: THREE.MeshBasicMaterial;
   private lastCamKey = '';
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   private fpsEma = 60;
@@ -102,6 +104,10 @@ export class Editor {
     brushStrength: document.getElementById('brush-strength') as HTMLInputElement,
     brushStrengthVal: document.getElementById('brush-strength-val') as HTMLSpanElement,
     brushTopo: document.getElementById('brush-topo') as HTMLInputElement,
+    paintPanel: document.getElementById('paint-panel') as HTMLDivElement,
+    paintRadius: document.getElementById('paint-radius') as HTMLInputElement,
+    paintRadiusVal: document.getElementById('paint-radius-val') as HTMLSpanElement,
+    paintScatter: document.getElementById('paint-scatter') as HTMLInputElement,
   };
 
   constructor(world: WorldHandle) {
@@ -192,6 +198,22 @@ export class Editor {
     this.brushRing.frustumCulled = false;
     this.brushRing.renderOrder = 10;
     this.viewport.scene.add(this.brushRing);
+
+    // textured stamp preview (paint mode)
+    this.stampGhostMat = new THREE.MeshBasicMaterial({
+      map: this.tileset.texture,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+    this.stampGhostMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.stampGhostMat);
+    this.stampGhostMesh.visible = false;
+    this.stampGhostMesh.frustumCulled = false;
+    this.stampGhostMesh.renderOrder = 5;
+    this.viewport.scene.add(this.stampGhostMesh);
 
     // palette (tileset preview — texturing the volume comes later)
     this.palette = new Palette(document.getElementById('palette') as HTMLCanvasElement, this.tileset);
@@ -287,6 +309,20 @@ export class Editor {
   }
 
   // -- overlays --------------------------------------------------------------------
+
+  /** Show a textured preview of what a paint click will place. */
+  setStampGhost(preview: { quads: Quad[]; uvs: number[] } | null): void {
+    if (!preview || preview.quads.length === 0) {
+      this.stampGhostMesh.visible = false;
+      return;
+    }
+    buildTexturedQuadGeometry(
+      preview.quads,
+      preview.uvs,
+      this.stampGhostMesh.geometry as THREE.BufferGeometry,
+    );
+    this.stampGhostMesh.visible = true;
+  }
 
   setGhost(quads: Quad[] | null, erase = false): void {
     if (!quads || quads.length === 0) {
@@ -451,17 +487,13 @@ export class Editor {
       for (const lk of handoff) this.selectedVerts.add(`L:${lk}`);
     }
     this.el.sculptPanel.hidden = name !== 'sculpt';
+    this.el.paintPanel.hidden = name !== 'paint';
     document.querySelectorAll<HTMLButtonElement>('#mode-buttons button').forEach((b) => {
       b.classList.toggle('active', b.dataset.mode === name);
     });
     this.el.status.innerHTML = MODE_HINTS[name];
     this.el.gridStep.value = String(this.gridStep);
-    this.forceGridRebuild();
     this.refreshOverlays();
-  }
-
-  private forceGridRebuild(): void {
-    this.lastGridKey = '';
   }
 
   // -- persistence ------------------------------------------------------------------
@@ -629,7 +661,6 @@ export class Editor {
     const next = GRID_STEPS[(i + dir + GRID_STEPS.length) % GRID_STEPS.length];
     this.gridStep = next;
     this.el.gridStep.value = String(next);
-    this.forceGridRebuild();
   }
 
   private centerCamera(): void {
@@ -652,7 +683,6 @@ export class Editor {
     });
     this.el.gridStep.addEventListener('change', () => {
       this.gridStep = parseFloat(this.el.gridStep.value);
-      this.forceGridRebuild();
     });
     this.el.camera.addEventListener('click', () => this.toggleCameraMode());
     this.el.geom.addEventListener('click', () => this.toggleGeomView());
@@ -675,6 +705,15 @@ export class Editor {
     });
     this.el.brushTopo.addEventListener('change', () => {
       this.brush.topo = this.el.brushTopo.checked;
+    });
+    this.el.paintRadius.addEventListener('input', () => {
+      this.paintBrush.radius = parseFloat(this.el.paintRadius.value);
+      this.el.paintRadiusVal.textContent = this.paintBrush.radius.toFixed(1);
+      (this.modes.paint as PaintMode).refreshPreview();
+    });
+    this.el.paintScatter.addEventListener('change', () => {
+      this.paintBrush.scatter = this.el.paintScatter.checked;
+      (this.modes.paint as PaintMode).refreshPreview();
     });
     document.getElementById('btn-undo')!.addEventListener('click', () => this.undo());
     document.getElementById('btn-redo')!.addEventListener('click', () => this.redo());
@@ -733,26 +772,7 @@ export class Editor {
 
   private tick(dt: number): void {
     if (dt > 0) this.fpsEma = this.fpsEma * 0.95 + (1 / dt) * 0.05;
-    // reference grid at y=0, centered where the view meets that plane
-    const frame = axisFrame('y', 0);
     const eye = this.viewport.cameraPos();
-    const fwd = this.viewport.forward();
-    const n = norm(frame.n);
-    const rel = dot(n, sub(frame.origin, eye)); // signed distance eye → plane
-    const denom = dot(n, fwd);
-    const t = Math.abs(denom) > 1e-4 ? rel / denom : Infinity;
-    const center =
-      t > 0.5 && t < 150
-        ? add(eye, mul(fwd, t)) // where you're looking on the plane
-        : add(eye, mul(n, rel)); // fallback: project the camera onto the plane
-    const local = frameLocal(frame, center);
-    const ca = Math.round(local.x);
-    const cb = Math.round(local.y);
-    const key = `${ca},${cb},${this.gridStep}`;
-    if (key !== this.lastGridKey) {
-      this.lastGridKey = key;
-      this.viewport.rebuildGrid(frame, ca, cb, 16, this.gridStep);
-    }
 
     // corner handles are occlusion-filtered, so refresh them as the camera moves
     const sculpt = this.modes.sculpt as SculptMode;

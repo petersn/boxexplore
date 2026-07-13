@@ -236,8 +236,18 @@ export class WorldHandle {
     radius: number,
     strength: number,
     topo: boolean,
+    dirOverride?: Vec3,
   ): void {
-    this.raw.stroke_begin(tool === 'smooth' ? 0 : 1, invert, radius, strength, topo);
+    this.raw.stroke_begin(
+      tool === 'smooth' ? 0 : 1,
+      invert,
+      radius,
+      strength,
+      topo,
+      dirOverride?.x ?? 0,
+      dirOverride?.y ?? 0,
+      dirOverride?.z ?? 0,
+    );
   }
 
   strokeDab(p: Vec3): void {
@@ -295,6 +305,43 @@ export class WorldHandle {
 
   paintCount(): number {
     return this.raw.paint_count();
+  }
+
+  /** Exposed faces within radius of a point (excluding the opposite of hitDir). */
+  facesInRadius(p: Vec3, radius: number, hitDir: number): FaceRef[] {
+    const t = this.raw.faces_in_radius(p.x, p.y, p.z, radius, hitDir);
+    const out: FaceRef[] = [];
+    for (let i = 0; i < t.length; i += 4) {
+      out.push({ cell: [t[i], t[i + 1], t[i + 2]], dir: t[i + 3] });
+    }
+    return out;
+  }
+
+  /** Paint many faces in one notification (a single brush application). */
+  paintFacesBatch(
+    targets: Array<{ face: FaceRef; tx: number; ty: number; orient: PaintOrient }>,
+  ): void {
+    for (const t of targets) {
+      this.raw.paint_face(
+        t.face.cell[0],
+        t.face.cell[1],
+        t.face.cell[2],
+        t.face.dir,
+        t.tx,
+        t.ty,
+        t.orient.rot,
+        t.orient.flipH,
+        t.orient.flipV,
+      );
+    }
+    if (targets.length) this.notify();
+  }
+
+  eraseFacesBatch(faces: FaceRef[]): void {
+    for (const f of faces) {
+      this.raw.erase_paint_face(f.cell[0], f.cell[1], f.cell[2], f.dir);
+    }
+    if (faces.length) this.notify();
   }
 
   shortestPath(from: LatticeKey, to: LatticeKey): LatticeKey[] {

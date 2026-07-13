@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { type Frame, framePoint } from './frame';
+import type { Frame } from './frame';
 import type { Vec3 } from './vec';
 
 const MIN_DIST = 0.5;
@@ -31,7 +31,6 @@ export class Viewport {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly raycaster = new THREE.Raycaster();
-  private readonly gridGroup = new THREE.Group();
   private held = new Set<string>();
   private cameraDrag: { kind: 'orbit' | 'pan'; lastX: number; lastY: number; moved: number } | null =
     null;
@@ -43,7 +42,6 @@ export class Viewport {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.scene.background = new THREE.Color(0x15171b);
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.02, 2000);
-    this.scene.add(this.gridGroup);
 
     const axes = new THREE.AxesHelper(1.5);
     (axes.material as THREE.Material).transparent = true;
@@ -246,6 +244,17 @@ export class Viewport {
     return hits.length ? hits[0] : null;
   }
 
+  /** Like pickGroup, but from canvas-space coordinates (for sweep interpolation). */
+  pickGroupAt(x: number, y: number, group: THREE.Object3D): THREE.Intersection | null {
+    const rect = this.canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2((x / rect.width) * 2 - 1, -(y / rect.height) * 2 + 1);
+    this.updateCamera();
+    this.camera.updateMatrixWorld();
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hits = this.raycaster.intersectObjects(group.children, false);
+    return hits.length ? hits[0] : null;
+  }
+
   /** Intersect the pointer ray with a working-plane frame. */
   pickFrame(e: PointerEvent, frame: Frame): Vec3 | null {
     this.setRayFromEvent(e);
@@ -300,64 +309,5 @@ export class Viewport {
   eventPoint(e: PointerEvent): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  }
-
-  // -- working plane grid ---------------------------------------------------
-
-  /** Rebuild the grid visual for a frame, centered near cell (ca, cb). */
-  rebuildGrid(frame: Frame, ca: number, cb: number, extent = 16, step = 1): void {
-    this.gridGroup.clear();
-    const positions: number[] = [];
-    const colors: number[] = [];
-    const push = (p: Vec3, r: number, g: number, b: number) => {
-      positions.push(p.x, p.y, p.z);
-      colors.push(r, g, b);
-    };
-    const a0 = ca - extent;
-    const a1 = ca + extent;
-    const b0 = cb - extent;
-    const b1 = cb + extent;
-    for (let i = a0; i <= a1; i++) {
-      const major = i === 0 ? 0.55 : i % 8 === 0 ? 0.34 : 0.19;
-      push(framePoint(frame, i, b0), major, major, major + 0.03);
-      push(framePoint(frame, i, b1), major, major, major + 0.03);
-    }
-    for (let j = b0; j <= b1; j++) {
-      const major = j === 0 ? 0.55 : j % 8 === 0 ? 0.34 : 0.19;
-      push(framePoint(frame, a0, j), major, major, major + 0.03);
-      push(framePoint(frame, a1, j), major, major, major + 0.03);
-    }
-    // sub-cell lines when the snap step is finer than a cell
-    if (step < 1) {
-      const sub = Math.round(1 / step);
-      const c = 0.11;
-      for (let ii = a0 * sub; ii <= a1 * sub; ii++) {
-        if (ii % sub === 0) continue;
-        push(framePoint(frame, ii / sub, b0), c, c, c);
-        push(framePoint(frame, ii / sub, b1), c, c, c);
-      }
-      for (let jj = b0 * sub; jj <= b1 * sub; jj++) {
-        if (jj % sub === 0) continue;
-        push(framePoint(frame, a0, jj / sub), c, c, c);
-        push(framePoint(frame, a1, jj / sub), c, c, c);
-      }
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.8 });
-    this.gridGroup.add(new THREE.LineSegments(geo, mat));
-
-    // normal indicator at the grid center
-    const c = framePoint(frame, ca, cb);
-    const tip = framePoint(frame, ca, cb, 1.2);
-    const ngeo = new THREE.BufferGeometry();
-    ngeo.setAttribute(
-      'position',
-      new THREE.Float32BufferAttribute([c.x, c.y, c.z, tip.x, tip.y, tip.z], 3),
-    );
-    this.gridGroup.add(
-      new THREE.LineSegments(ngeo, new THREE.LineBasicMaterial({ color: 0x4da3ff })),
-    );
   }
 }

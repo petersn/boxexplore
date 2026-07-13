@@ -25,6 +25,11 @@ export class World {
      */
     face_quad(x: number, y: number, z: number, d: number, sculpted: boolean): Float32Array;
     /**
+     * Exposed faces within `radius` of a point (4 ints per face: cell + dir),
+     * excluding faces opposite `hit_dir`.
+     */
+    faces_in_radius(px: number, py: number, pz: number, radius: number, hit_dir: number): Int32Array;
+    /**
      * Bulk fill (no history) — world generation and stress testing.
      */
     fill_box_raw(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, v: boolean): void;
@@ -81,9 +86,10 @@ export class World {
      */
     stats(): Float64Array;
     /**
-     * tool: 0 smooth · 1 draw.
+     * tool: 0 smooth · 1 draw. A non-zero (dx,dy,dz) locks the Draw brush's
+     * push direction (the sculpt axis constraint).
      */
-    stroke_begin(tool: number, invert: boolean, radius: number, strength: number, topo: boolean): void;
+    stroke_begin(tool: number, invert: boolean, radius: number, strength: number, topo: boolean, dx: number, dy: number, dz: number): void;
     stroke_dab(px: number, py: number, pz: number): void;
     stroke_end(): boolean;
     surface_corner_count(): number;
@@ -120,6 +126,7 @@ export interface InitOutput {
     readonly world_erase_paint_face: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly world_extrude_rect: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => number;
     readonly world_face_quad: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly world_faces_in_radius: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly world_fill_box_raw: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly world_get_cell: (a: number, b: number, c: number, d: number) => number;
     readonly world_get_paint: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -149,7 +156,7 @@ export interface InitOutput {
     readonly world_shift_count: (a: number) => number;
     readonly world_shortest_path: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly world_stats: (a: number) => [number, number];
-    readonly world_stroke_begin: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly world_stroke_begin: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly world_stroke_dab: (a: number, b: number, c: number, d: number) => void;
     readonly world_stroke_end: (a: number) => number;
     readonly world_surface_corner_count: (a: number) => number;

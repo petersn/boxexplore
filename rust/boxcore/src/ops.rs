@@ -226,6 +226,56 @@ pub fn corner_neighbors(store: &ChunkStore, l: IV) -> Vec<IV> {
     out
 }
 
+/// Exposed faces whose (displaced) center lies within `radius` of a point,
+/// excluding faces opposite the hit direction (a paint brush shouldn't bleed
+/// through onto back sides).
+pub fn faces_in_radius(
+    store: &ChunkStore,
+    offsets: &Offsets,
+    p: V3,
+    radius: f32,
+    hit_dir: usize,
+) -> Vec<(IV, usize)> {
+    let r = radius + 1.6;
+    let lo = (
+        (p[0] - r).floor() as i32,
+        (p[1] - r).floor() as i32,
+        (p[2] - r).floor() as i32,
+    );
+    let hi = (
+        (p[0] + r).ceil() as i32,
+        (p[1] + r).ceil() as i32,
+        (p[2] + r).ceil() as i32,
+    );
+    let opposite = hit_dir ^ 1;
+    let mut out = Vec::new();
+    for x in lo.0..=hi.0 {
+        for y in lo.1..=hi.1 {
+            for z in lo.2..=hi.2 {
+                let cell = (x, y, z);
+                if !store.get(cell) {
+                    continue;
+                }
+                for (d, dir) in DIRS.iter().enumerate() {
+                    if d == opposite || store.get(add_iv(cell, *dir)) {
+                        continue;
+                    }
+                    let v = face_verts(offsets, cell, d);
+                    let c = [
+                        (v[0][0] + v[1][0] + v[2][0] + v[3][0]) * 0.25,
+                        (v[0][1] + v[1][1] + v[2][1] + v[3][1]) * 0.25,
+                        (v[0][2] + v[1][2] + v[2][2] + v[3][2]) * 0.25,
+                    ];
+                    if v3_len(v3_sub(c, p)) <= radius {
+                        out.push((cell, d));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// All surface lattice corners within `radius` of a world point.
 pub fn surface_corners_in_radius(store: &ChunkStore, offsets: &Offsets, p: V3, radius: f32) -> Vec<IV> {
     let r = radius + 0.75; // offsets can move a corner up to ~0.87 away
@@ -889,6 +939,9 @@ pub struct Stroke {
     pub radius: f32,
     pub strength: f32,
     pub topo: bool,
+    /// When set (sculpt axis constraint), the Draw brush pushes along this
+    /// direction instead of each corner's surface normal.
+    pub dir_override: Option<V3>,
     shifts_before: FxHashMap<i64, Option<V3>>,
     cells_added: FxHashSet<i64>,
     cells_removed: FxHashSet<i64>,
@@ -902,6 +955,7 @@ impl Stroke {
             radius,
             strength,
             topo,
+            dir_override: None,
             shifts_before: FxHashMap::default(),
             cells_added: FxHashSet::default(),
             cells_removed: FxHashSet::default(),
@@ -935,7 +989,9 @@ impl Stroke {
                     v3_add(pos, v3_scale(v3_sub(avg, pos), (w * 0.7).min(1.0)))
                 }
                 BrushTool::Draw => {
-                    let n = corner_normal(store, offsets, *l);
+                    let n = self
+                        .dir_override
+                        .unwrap_or_else(|| corner_normal(store, offsets, *l));
                     let s = if self.invert { -1.0 } else { 1.0 };
                     v3_add(pos, v3_scale(n, s * w * 0.22))
                 }

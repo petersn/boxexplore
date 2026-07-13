@@ -138,6 +138,22 @@ export class World {
         return v1;
     }
     /**
+     * Exposed faces within `radius` of a point (4 ints per face: cell + dir),
+     * excluding faces opposite `hit_dir`.
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} radius
+     * @param {number} hit_dir
+     * @returns {Int32Array}
+     */
+    faces_in_radius(px, py, pz, radius, hit_dir) {
+        const ret = wasm.world_faces_in_radius(this.__wbg_ptr, px, py, pz, radius, hit_dir);
+        var v1 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * Bulk fill (no history) — world generation and stress testing.
      * @param {number} x0
      * @param {number} y0
@@ -433,15 +449,19 @@ export class World {
         return v1;
     }
     /**
-     * tool: 0 smooth · 1 draw.
+     * tool: 0 smooth · 1 draw. A non-zero (dx,dy,dz) locks the Draw brush's
+     * push direction (the sculpt axis constraint).
      * @param {number} tool
      * @param {boolean} invert
      * @param {number} radius
      * @param {number} strength
      * @param {boolean} topo
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
      */
-    stroke_begin(tool, invert, radius, strength, topo) {
-        wasm.world_stroke_begin(this.__wbg_ptr, tool, invert, radius, strength, topo);
+    stroke_begin(tool, invert, radius, strength, topo, dx, dy, dz) {
+        wasm.world_stroke_begin(this.__wbg_ptr, tool, invert, radius, strength, topo, dx, dy, dz);
     }
     /**
      * @param {number} px

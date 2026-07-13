@@ -59,6 +59,41 @@ export function buildOutlineGeometry(
   geometry.computeBoundingSphere();
 }
 
+/** Build textured quad geometry (positions + uvs) for stamp previews. */
+export function buildTexturedQuadGeometry(
+  quads: readonly Quad[],
+  uvs: readonly number[], // 8 per quad, [bl,br,tr,tl]·uv
+  geometry: THREE.BufferGeometry,
+): void {
+  const count = quads.length;
+  const positions = new Float32Array(count * 4 * 3);
+  const uvArr = new Float32Array(count * 4 * 2);
+  const indices = count * 4 > 65535 ? new Uint32Array(count * 6) : new Uint16Array(count * 6);
+  let pi = 0;
+  let ii = 0;
+  for (let i = 0; i < count; i++) {
+    const q = quads[i];
+    for (let k = 0; k < 4; k++) {
+      positions[pi++] = q.verts[k].x;
+      positions[pi++] = q.verts[k].y;
+      positions[pi++] = q.verts[k].z;
+      uvArr[i * 8 + k * 2] = uvs[i * 8 + k * 2];
+      uvArr[i * 8 + k * 2 + 1] = uvs[i * 8 + k * 2 + 1];
+    }
+    const base = i * 4;
+    indices[ii++] = base + 0;
+    indices[ii++] = base + 1;
+    indices[ii++] = base + 2;
+    indices[ii++] = base + 0;
+    indices[ii++] = base + 2;
+    indices[ii++] = base + 3;
+  }
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
+  geometry.computeBoundingSphere();
+}
+
 /** Quad from a wasm face-quad buffer (12 floats, [bl,br,tr,tl]·xyz). */
 export function quadFromBuffer(q: Float32Array): Quad {
   return {

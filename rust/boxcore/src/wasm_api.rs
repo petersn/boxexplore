@@ -385,14 +385,30 @@ impl World {
         self.commit(op)
     }
 
-    /// tool: 0 smooth · 1 draw.
-    pub fn stroke_begin(&mut self, tool: u32, invert: bool, radius: f32, strength: f32, topo: bool) {
+    /// tool: 0 smooth · 1 draw. A non-zero (dx,dy,dz) locks the Draw brush's
+    /// push direction (the sculpt axis constraint).
+    #[allow(clippy::too_many_arguments)]
+    pub fn stroke_begin(
+        &mut self,
+        tool: u32,
+        invert: bool,
+        radius: f32,
+        strength: f32,
+        topo: bool,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+    ) {
         let t = if tool == 0 {
             BrushTool::Smooth
         } else {
             BrushTool::Draw
         };
-        self.stroke = Some(Stroke::new(t, invert, radius, strength, topo));
+        let mut stroke = Stroke::new(t, invert, radius, strength, topo);
+        if dx != 0.0 || dy != 0.0 || dz != 0.0 {
+            stroke.dir_override = Some([dx, dy, dz]);
+        }
+        self.stroke = Some(stroke);
     }
 
     pub fn stroke_dab(&mut self, px: f32, py: f32, pz: f32) {
@@ -483,6 +499,22 @@ impl World {
 
     pub fn paint_count(&self) -> u32 {
         self.paints.len() as u32
+    }
+
+    /// Exposed faces within `radius` of a point (4 ints per face: cell + dir),
+    /// excluding faces opposite `hit_dir`.
+    pub fn faces_in_radius(&self, px: f32, py: f32, pz: f32, radius: f32, hit_dir: u32) -> Vec<i32> {
+        let mut out = Vec::new();
+        for (cell, d) in ops::faces_in_radius(
+            &self.store,
+            &self.offsets,
+            [px, py, pz],
+            radius,
+            hit_dir as usize,
+        ) {
+            out.extend_from_slice(&[cell.0, cell.1, cell.2, d as i32]);
+        }
+        out
     }
 
     // -- io ------------------------------------------------------------------------

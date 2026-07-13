@@ -145,12 +145,26 @@ export class SculptMode {
     if (this.tool !== 'select') {
       const pick = ed.pickVolFace(e);
       if (!pick) return;
+      // with an axis constraint, the Draw brush pushes along that axis,
+      // signed toward the camera's side of the surface
+      let dirOverride: Vec3 | undefined;
+      const c = this.constraint;
+      if (this.tool === 'draw' && c && !c.plane) {
+        const u = AXIS_UNITS[c.axis];
+        const eye = ed.viewport.cameraPos();
+        const toward =
+          u.x * (eye.x - pick.point.x) +
+          u.y * (eye.y - pick.point.y) +
+          u.z * (eye.z - pick.point.z);
+        dirOverride = mul(u, toward >= 0 ? 1 : -1);
+      }
       ed.world.strokeBegin(
         this.tool,
         e.altKey,
         ed.brush.radius,
         ed.brush.strength,
         ed.brush.topo,
+        dirOverride,
       );
       ed.world.strokeDab(pick.point);
       this.drag = { kind: 'stroke' };
