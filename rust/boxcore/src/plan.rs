@@ -626,7 +626,16 @@ impl Plan {
         }
 
         // Tier 2: per world column, fill whatever the core didn't cover and
-        // set the surface offsets from the interpolated heights.
+        // set the surface offsets. Corner offsets are clamped into the
+        // INTERSECTION band of all adjacent columns' reachable ranges
+        // [plane − ½, plane + ½] — clamping against a column's own plane
+        // alone leaves gaps at voxel steps (the lower column tops out at
+        // p + ½ while the upper reaches the true height): adjacent columns
+        // must agree on ONE meeting height so the step wall collapses.
+        let ww = (self.w as i32 * PLAN_SCALE) as usize;
+        let wh = (self.h as i32 * PLAN_SCALE) as usize;
+        const VOID: (i32, i32) = (i32::MIN, i32::MIN);
+        let mut grid = vec![VOID; ww * wh];
         for pz in 0..self.h {
             for px in 0..self.w {
                 if !self.mask[self.idx(px, pz)] {
@@ -636,17 +645,65 @@ impl Plan {
                     for dx in 0..PLAN_SCALE {
                         let wx = px as i32 * PLAN_SCALE - half_w + dx;
                         let wz = pz as i32 * PLAN_SCALE - half_h + dz;
-                        let (top, bot) = planes(wx, wz);
+                        let gi = (wz + half_h) as usize * ww + (wx + half_w) as usize;
+                        grid[gi] = planes(wx, wz);
+                    }
+                }
+            }
+        }
+        let col = |wx: i32, wz: i32| -> Option<(i32, i32)> {
+            let gx = wx + half_w;
+            let gz = wz + half_h;
+            if gx < 0 || gz < 0 || gx >= ww as i32 || gz >= wh as i32 {
+                return None;
+            }
+            let v = grid[gz as usize * ww + gx as usize];
+            (v != VOID).then_some(v)
+        };
+
+        for pz in 0..self.h {
+            for px in 0..self.w {
+                if !self.mask[self.idx(px, pz)] {
+                    continue;
+                }
+                for dz in 0..PLAN_SCALE {
+                    for dx in 0..PLAN_SCALE {
+                        let wx = px as i32 * PLAN_SCALE - half_w + dx;
+                        let wz = pz as i32 * PLAN_SCALE - half_h + dz;
+                        let (top, bot) = col(wx, wz).unwrap();
                         store.fill_box((wx, bot, wz), (wx + 1, top, wz + 1), true);
-                        // top/bottom lattice corners follow the smooth field
                         for (cx, cz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                             let lx = wx + cx;
                             let lz = wz + cz;
+                            // adjacent filled columns constrain the corner
+                            let mut tmin = top;
+                            let mut tmax = top;
+                            let mut bmin = bot;
+                            let mut bmax = bot;
+                            for (ax, az) in [(lx - 1, lz - 1), (lx, lz - 1), (lx - 1, lz), (lx, lz)] {
+                                if let Some((t, b)) = col(ax, az) {
+                                    tmin = tmin.min(t);
+                                    tmax = tmax.max(t);
+                                    bmin = bmin.min(b);
+                                    bmax = bmax.max(b);
+                                }
+                            }
                             let ht = self.sample(&self.top, lx as f32, lz as f32);
-                            let dt = (ht - top as f32).clamp(-0.5, 0.5);
+                            let dt = if tmax - tmin <= 1 {
+                                // meet in the shared band (a single point when
+                                // the planes differ by one)
+                                ht.clamp(tmax as f32 - 0.5, tmin as f32 + 0.5) - top as f32
+                            } else {
+                                // ≥ 2 apart: a real cliff — follow the field
+                                (ht - top as f32).clamp(-0.5, 0.5)
+                            };
                             offsets.set((lx, top, lz), Some([0.0, dt, 0.0]));
                             let hb = self.sample(&self.bottom, lx as f32, lz as f32);
-                            let db = (hb - bot as f32).clamp(-0.5, 0.5);
+                            let db = if bmax - bmin <= 1 {
+                                hb.clamp(bmax as f32 - 0.5, bmin as f32 + 0.5) - bot as f32
+                            } else {
+                                (hb - bot as f32).clamp(-0.5, 0.5)
+                            };
                             offsets.set((lx, bot, lz), Some([0.0, db, 0.0]));
                         }
                     }

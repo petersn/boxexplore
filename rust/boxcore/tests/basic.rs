@@ -846,3 +846,61 @@ fn plan_undo_is_stroke_scoped_and_separate() {
     assert!(w.plan_undo());
     assert_eq!(w.plan_sample(16, 16)[2], 1.0);
 }
+
+/// Regression for the two smooth-terrain artifacts Peter reported: corner
+/// offsets clamped only against their own column's plane left sub-unit
+/// walls at every voxel step ("terracing"), and voxel-based corner AO
+/// painted dark strips along contour lines even though the displaced
+/// geometry is continuous there.
+#[test]
+fn generated_slopes_are_seamless_and_unshadowed() {
+    use boxcore::wasm_api::World;
+    let mut w = World::new();
+    w.plan_init(64, 64);
+    w.plan_brush(32.0, 32.0, 12.0, 20.0, 0); // steep-ish hill (~0.8/cell)
+    w.plan_generate();
+
+    // C0: fine transect down the hillside — successive picks may never
+    // jump more than the local slope explains (a step wall reads as ~1)
+    let mut prev = f32::NAN;
+    let mut worst = 0.0f32;
+    for i in 0..160 {
+        let x = 1.0 + i as f32 * 0.25;
+        let v = w.pick(x, 200.0, 1.0, 0.0, -1.0, 0.0, 500.0, true);
+        assert!(v.len() >= 8, "transect hit at x={x}");
+        if prev.is_finite() {
+            worst = worst.max((v[5] - prev).abs());
+        }
+        prev = v[5];
+    }
+    assert!(worst < 0.4, "no terracing on the slope (max jump {worst})");
+
+    // AO: within one flat quad the lambert term is constant, so the ratio
+    // of darkest to brightest vertex isolates AO. On the smooth hillside
+    // every top face must be nearly unshadowed (the raw voxel AO gave
+    // ratios ≈ 0.6 along every contour step).
+    let faces = w.mesh_chunk(0, 0, 0, true, false, false);
+    assert!(faces > 0);
+    let colors = w.mesh_colors();
+    let keys = w.mesh_face_keys();
+    let mut checked = 0;
+    for f in 0..faces as usize {
+        if keys[f * 4 + 3] != 2 {
+            continue; // top faces only
+        }
+        let mut lo = f32::INFINITY;
+        let mut hi = 0.0f32;
+        for k in 0..4 {
+            let c = colors[(f * 4 + k) * 3];
+            lo = lo.min(c);
+            hi = hi.max(c);
+        }
+        assert!(
+            lo / hi > 0.8,
+            "top face {f} shadow-striped: ratio {}",
+            lo / hi
+        );
+        checked += 1;
+    }
+    assert!(checked > 50, "checked {checked} top faces");
+}

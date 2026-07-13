@@ -149,6 +149,7 @@ pub fn mesh_chunk(
                     let target = if paint.is_some() { &mut painted } else { &mut out };
                     emit_face(
                         target,
+                        store,
                         &occ,
                         offsets,
                         cell,
@@ -196,8 +197,10 @@ fn paint_uvs(paint: u32, grid: (u32, u32)) -> [[f32; 2]; 4] {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn emit_face(
     out: &mut ChunkMesh,
+    store: &ChunkStore,
     occ: &[u8],
     offsets: &Offsets,
     cell: IV,
@@ -216,6 +219,7 @@ fn emit_face(
 
     let mut verts = [[0f32; 3]; 4];
     let mut ao = [0u8; 4];
+    let mut ao_f = [0f32; 4];
     let mut tint_t = [0f32; 4];
     let mut tint_dir = [[0.5f32; 3]; 4];
     for k in 0..4 {
@@ -259,6 +263,37 @@ fn emit_face(
         } else {
             3 - s1 - s2 - sc
         };
+        ao_f[k] = ao[k] as f32;
+        // Offset-aware attenuation: the occluders of this corner all rest
+        // on the face's plane, so their shared wall spans lat → lat+dir.
+        // Displacements shrink that wall — on smooth offset terrain the
+        // next terrace's wall collapses to ~nothing and shouldn't darken
+        // the surface (the raw voxel test paints dark strips along every
+        // contour). Occluders deeper than one cell keep full occlusion.
+        if use_offsets && ao[k] < 3 {
+            let sgn = if d % 2 == 0 { 1.0 } else { -1.0 };
+            let o_here = off.map_or(0.0, |o| o[axis]) * sgn;
+            let lat_out = (lat.0 + dir.0, lat.1 + dir.1, lat.2 + dir.2);
+            let o_out = offsets.get_opt(lat_out).map_or(0.0, |o| o[axis]) * sgn;
+            let mut deep = false;
+            for (p, solid) in [(p1, s1), (p2, s2), (pc, sc)] {
+                if solid != 0 {
+                    let wp = (
+                        cell.0 + (p[0] - local.0) + dir.0,
+                        cell.1 + (p[1] - local.1) + dir.1,
+                        cell.2 + (p[2] - local.2) + dir.2,
+                    );
+                    if store.get(wp) {
+                        deep = true;
+                        break;
+                    }
+                }
+            }
+            if !deep {
+                let t = (1.0 + o_out - o_here).clamp(0.0, 1.0);
+                ao_f[k] = 3.0 - (3.0 - ao_f[k]) * t;
+            }
+        }
     }
 
     let n = quad_normal(&verts);
@@ -267,16 +302,21 @@ fn emit_face(
 
     let uvs = paint.map(|p| paint_uvs(p, grid));
     let vbase = (out.positions.len() / 3) as u32;
+    let curve = |a: f32| -> f32 {
+        let i = (a.floor() as usize).min(2);
+        let f = a - i as f32;
+        AO_CURVE[i] + (AO_CURVE[i + 1] - AO_CURVE[i]) * f
+    };
     for k in 0..4 {
         out.positions.extend_from_slice(&verts[k]);
         if let Some(uv) = &uvs {
             // painted faces: vertex color carries the shading only (the map
             // is modulated by it), full-brightness base
-            let bk = bright * AO_CURVE[ao[k] as usize];
+            let bk = bright * curve(ao_f[k]);
             out.colors.extend_from_slice(&[bk, bk, bk]);
             out.uvs.extend_from_slice(&uv[k]);
         } else {
-            let bk = bright * AO_CURVE[ao[k] as usize];
+            let bk = bright * curve(ao_f[k]);
             let mut r = VOL_BASE[0] * bk;
             let mut g = VOL_BASE[1] * bk;
             let mut b = VOL_BASE[2] * bk;
