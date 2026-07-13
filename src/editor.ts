@@ -1,20 +1,18 @@
 import * as THREE from 'three';
-import { type BoxSel, BuildMode } from './build';
+import { BuildMode } from './build';
 import { axisFrame, frameLocal } from './frame';
 import { downloadText, loadScene, serializeScene } from './io';
-import { type Quad, buildOutlineGeometry, buildQuadGeometry, VolMesh } from './meshbuilder';
-import { Doc, type EditOp, History, opIsEmpty } from './model';
+import { type Quad, buildOutlineGeometry, buildQuadGeometry } from './meshbuilder';
 import { Palette, type Stamp } from './palette';
-import { Tileset } from './tileset';
+import { ChunkRenderer } from './render';
 import { SculptMode, type SculptTool } from './sculpt';
+import { Tileset } from './tileset';
 import { type Vec3, add, dot, mul, norm, sub } from './vec';
 import { Viewport } from './viewport';
-import { type VolFace, boundaryStats, buildSurface, parseCell } from './volume';
+import type { FaceRef, RectSel, WorldHandle } from './world';
 
 const AUTOSAVE_KEY = 'boxexplore.autosave.v1';
 const GRID_STEPS = [1, 0.5, 0.25, 0.125];
-
-const EMPTY_SHIFTS = new Map<string, Vec3>();
 
 type ModeName = 'build' | 'sculpt';
 
@@ -38,25 +36,16 @@ Select: <b>click</b> · <b>click again</b> drags · <b>drag</b> box (<b>Shift</b
 };
 
 export class Editor {
-  readonly doc = new Doc();
-  readonly history = new History();
+  readonly world: WorldHandle;
   readonly tileset = new Tileset();
   readonly viewport: Viewport;
   readonly palette: Palette;
-  readonly volMesh: VolMesh;
-
-  /** Derived volume boundary (always sculpted), rebuilt when cells/shifts change. */
-  surface: VolFace[] = [];
-  surfaceMap = new Map<string, VolFace>();
-  surfaceLattice = new Set<string>();
-  /** What's on screen: sculpted surface, or raw voxels in the voxel view. */
-  displaySurface: VolFace[] = [];
-  displayMap = new Map<string, VolFace>();
+  readonly renderer: ChunkRenderer;
 
   stamp: Stamp = { tx: 0, ty: 0, w: 1, h: 1 };
   selectedVerts = new Set<string>();
   /** Build mode's active rectangle selection. */
-  boxSel: BoxSel | null = null;
+  boxSel: RectSel | null = null;
   /** Geometry view: displaced surface, or the raw voxels underneath. */
   geomView: 'sculpted' | 'voxels' = 'sculpted';
   /** Texture view: untextured shows displacement magnitude as vertex color. */
@@ -75,19 +64,17 @@ export class Editor {
     this.gridStepByMode[this.mode?.name ?? 'build'] = v;
   }
 
-  private modes: Record<ModeName, Mode>;
-  private mode: Mode;
+  readonly modes: Record<ModeName, Mode>;
+  mode: Mode;
 
   private ghostMesh: THREE.Mesh;
   private ghostMat: THREE.MeshBasicMaterial;
   private selMesh: THREE.Mesh;
   private selOutline: THREE.LineSegments;
-  private volOutline: THREE.LineSegments;
   private vertPoints: THREE.Points;
   private constraintLines: THREE.LineSegments;
   private brushRing: THREE.LineLoop;
   private lastGridKey = '';
-  private lastVolVersion = -1;
   private lastCamKey = '';
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -111,27 +98,13 @@ export class Editor {
     brushTopo: document.getElementById('brush-topo') as HTMLInputElement,
   };
 
-  constructor() {
+  constructor(world: WorldHandle) {
+    this.world = world;
     const canvas = document.getElementById('viewport') as HTMLCanvasElement;
     this.viewport = new Viewport(canvas);
 
-    // derived volume surface: untextured, flat-shaded by normal + AO, pushed
-    // back a hair so overlays win the depth fight
-    const volMat = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
-    });
-    this.volMesh = new VolMesh(volMat);
-    this.viewport.scene.add(this.volMesh.mesh);
-
-    this.volOutline = new THREE.LineSegments(
-      new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ color: 0x0e1013, transparent: true, opacity: 0.4 }),
-    );
-    this.volOutline.frustumCulled = false;
-    this.viewport.scene.add(this.volOutline);
+    this.renderer = new ChunkRenderer();
+    this.viewport.scene.add(this.renderer.group);
 
     this.ghostMat = new THREE.MeshBasicMaterial({
       side: THREE.DoubleSide,
@@ -226,8 +199,9 @@ export class Editor {
     };
     this.mode = this.modes.build;
 
-    this.doc.subscribe(() => {
-      this.rebuildSurface();
+    this.world.subscribe(() => {
+      this.renderer.sync(this.world);
+      (this.modes.sculpt as SculptMode).invalidateVisible();
       this.pruneSelection();
       this.refreshOverlays();
       this.scheduleAutosave();
@@ -244,51 +218,31 @@ export class Editor {
     this.bindDragDrop();
 
     this.viewport.onTick = () => this.tick();
-    this.rebuildSurface();
     this.setMode('build');
     this.restoreAutosave();
   }
 
-  // -- derived volume surface ---------------------------------------------------
-
-  private rebuildSurface(): void {
-    if (this.doc.volVersion === this.lastVolVersion) return;
-    this.lastVolVersion = this.doc.volVersion;
-    this.surface = buildSurface(this.doc.cells, this.doc.shifts);
-    this.surfaceMap.clear();
-    this.surfaceLattice.clear();
-    for (const f of this.surface) {
-      this.surfaceMap.set(f.key, f);
-      for (const lk of f.lattice) this.surfaceLattice.add(lk);
-    }
-    this.renderSurface();
-  }
-
-  /** (Re)build the displayed surface for the current view toggles. */
-  private renderSurface(): void {
-    this.displaySurface =
-      this.geomView === 'voxels' ? buildSurface(this.doc.cells, EMPTY_SHIFTS) : this.surface;
-    // untextured view paints displacement magnitude into the vertex colors
-    // (later, "textured" will show the painted tiles instead)
-    const tint = this.texView === 'untextured' ? this.doc.shifts : undefined;
-    this.volMesh.rebuild(this.displaySurface, tint);
-    this.displayMap.clear();
-    for (const f of this.displaySurface) this.displayMap.set(f.key, f);
-    buildOutlineGeometry(this.displaySurface, this.volOutline.geometry as THREE.BufferGeometry);
-    this.volOutline.visible = this.displaySurface.length > 0;
-  }
+  // -- views ---------------------------------------------------------------------
 
   toggleGeomView(): void {
     this.geomView = this.geomView === 'sculpted' ? 'voxels' : 'sculpted';
     this.el.geom.textContent = this.geomView === 'sculpted' ? 'Sculpted' : 'Voxels';
-    this.renderSurface();
-    this.refreshOverlays();
+    this.applyView();
   }
 
   toggleTexView(): void {
     this.texView = this.texView === 'textured' ? 'untextured' : 'textured';
     this.el.tex.textContent = this.texView === 'textured' ? 'Textured' : 'Untextured';
-    this.renderSurface();
+    this.applyView();
+  }
+
+  private applyView(): void {
+    this.renderer.view = {
+      sculpted: this.geomView === 'sculpted',
+      tint: this.texView === 'untextured',
+    };
+    this.renderer.rebuildAll(this.world);
+    this.refreshOverlays();
   }
 
   toggleCameraMode(): void {
@@ -298,37 +252,24 @@ export class Editor {
 
   /** Watertightness numbers for the derived surface (used by verify scripts). */
   surfaceStats(): { faces: number; oddEdges: number } {
-    return boundaryStats(this.surface);
+    return this.world.stats();
   }
 
   // -- edits ---------------------------------------------------------------------
 
-  commit(op: EditOp): void {
-    if (opIsEmpty(op)) return;
-    this.doc.applyOp(op, 1);
-    this.history.push(op);
-  }
-
-  /** Push an op whose changes were already applied live during a drag. */
-  commitApplied(op: EditOp): void {
-    if (opIsEmpty(op)) return;
-    this.history.push(op);
-    this.scheduleAutosave();
-  }
-
   undo(): void {
     this.boxSel = null;
-    this.history.undo(this.doc);
+    this.world.undo();
   }
 
   redo(): void {
     this.boxSel = null;
-    this.history.redo(this.doc);
+    this.world.redo();
   }
 
   private pruneSelection(): void {
     for (const key of this.selectedVerts) {
-      if (!key.startsWith('L:') || !this.surfaceLattice.has(key.slice(2))) {
+      if (!key.startsWith('L:') || !this.world.surfaceHasCorner(key.slice(2))) {
         this.selectedVerts.delete(key);
       }
     }
@@ -464,13 +405,12 @@ export class Editor {
 
   // -- picking ------------------------------------------------------------------
 
-  pickVolFace(e: PointerEvent): { vf: VolFace; point: Vec3 } | null {
-    const hit = this.viewport.pickObject(e, this.volMesh.mesh);
-    if (!hit) return null;
-    const key = this.volMesh.keyAt(hit);
-    const vf = key != null ? this.surfaceMap.get(key) : undefined;
-    if (!vf) return null;
-    return { vf, point: { x: hit.point.x, y: hit.point.y, z: hit.point.z } };
+  pickVolFace(e: PointerEvent): { face: FaceRef; point: Vec3 } | null {
+    const hit = this.viewport.pickGroup(e, this.renderer.group);
+    if (!hit || hit.faceIndex == null) return null;
+    const face = this.renderer.faceAt(hit.object, hit.faceIndex);
+    if (!face) return null;
+    return { face, point: { x: hit.point.x, y: hit.point.y, z: hit.point.z } };
   }
 
   // -- modes ---------------------------------------------------------------------
@@ -526,7 +466,7 @@ export class Editor {
   }
 
   afterSceneLoad(): void {
-    this.history.clear();
+    this.world.clearHistory();
     this.selectedVerts.clear();
     this.boxSel = null;
     this.palette.refresh();
@@ -535,9 +475,8 @@ export class Editor {
   }
 
   private newScene(): void {
-    if (this.doc.cells.size && !confirm('Clear the whole scene?')) return;
-    this.doc.clear();
-    this.history.clear();
+    if (this.world.cellCount() && !confirm('Clear the whole scene?')) return;
+    this.world.clear();
     this.selectedVerts.clear();
     this.boxSel = null;
     (this.modes.build as BuildMode).seedVoxel(); // never leave the user stuck
@@ -671,15 +610,6 @@ export class Editor {
       this.viewport.centerOn({ x: p[0], y: p[1], z: p[2] });
       return;
     }
-    if (this.doc.cells.size) {
-      let c: Vec3 = { x: 0, y: 0, z: 0 };
-      for (const key of this.doc.cells) {
-        const [x, y, z] = parseCell(key);
-        c = add(c, { x: x + 0.5, y: y + 0.5, z: z + 0.5 });
-      }
-      this.viewport.centerOn(mul(c, 1 / this.doc.cells.size));
-      return;
-    }
     this.viewport.centerOn({ x: 0, y: 0, z: 0 });
   }
 
@@ -795,16 +725,21 @@ export class Editor {
       const camKey = `${eye.x.toFixed(2)},${eye.y.toFixed(2)},${eye.z.toFixed(2)},${this.viewport.yaw.toFixed(3)},${this.viewport.pitch.toFixed(3)}`;
       if (camKey !== this.lastCamKey) {
         this.lastCamKey = camKey;
+        (this.modes.sculpt as SculptMode).invalidateVisible();
         this.refreshOverlays();
       }
     }
+
+    // distance-based LOD for far chunks
+    this.renderer.updateLod(this.world, new THREE.Vector3(eye.x, eye.y, eye.z));
 
     const parts = [
       this.mode.name,
       `cam ${this.viewport.mode}`,
       `view ${this.geomView}/${this.texView}`,
       `grid ${this.gridStep}`,
-      `${this.doc.cells.size} cells`,
+      `${this.world.cellCount()} cells`,
+      `${this.renderer.chunkCount()} chunks`,
     ];
     const info = this.mode.statusInfo();
     if (info) parts.push(info);

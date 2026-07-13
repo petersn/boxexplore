@@ -1,8 +1,9 @@
-// End-to-end drive of the volume editor: seed voxel, rect-select + =/− with
-// faces-only extrude and march-through-air carve, offset extrapolation &
-// hygiene, ±0.5 clamping, exact vertex visibility (incl. concave corners),
-// click-to-select-then-drag, axis constraints + nudges, shortest-path select,
-// build→vertex selection handoff, brushes, view modes, cameras, undo, save/load.
+// End-to-end drive of the volume editor (Rust/WASM core): seed voxel,
+// rect-select + =/− with faces-only extrude and march-through-air carve,
+// offset extrapolation & hygiene, ±0.5 clamping, vertex visibility (incl.
+// concave corners), click-to-select-then-drag, axis constraints + nudges,
+// shortest-path select, build→sculpt handoff, spatial brushes with topology
+// growth, view toggles, cameras, undo, save/load.
 import { chromium } from 'playwright';
 
 const SHOTS = '/tmp/boxexplore-shots';
@@ -15,18 +16,20 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 page.on('pageerror', (err) => errors.push(err.message));
 await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
-await page.waitForTimeout(500);
+await page.waitForFunction(() => window.editor !== undefined, { timeout: 15000 });
+await page.waitForTimeout(300);
 const freshScene = () =>
   page.evaluate(() => {
     localStorage.clear();
-    window.editor.doc.clear();
-    window.editor.history.clear();
+    window.editor.world.clear();
+    window.editor.selectedVerts.clear();
+    window.editor.boxSel = null;
   });
 await freshScene();
 
 const box = await page.locator('#viewport').boundingBox();
-const cells = () => page.evaluate(() => window.editor.doc.cells.size);
-const shifts = () => page.evaluate(() => window.editor.doc.shifts.size);
+const cells = () => page.evaluate(() => window.editor.world.cellCount());
+const shifts = () => page.evaluate(() => window.editor.world.shiftCount());
 const stats = () => page.evaluate(() => window.editor.surfaceStats());
 const screen = (p) => page.evaluate((pt) => window.editor.viewport.screenPoint(pt), p);
 
@@ -52,7 +55,7 @@ check('plane picker UI is gone', (await page.locator('#plane-axis').count()) ===
 check('option checkboxes are gone', (await page.locator('#opt-attach').count()) === 0);
 await page.keyboard.press('4');
 check(
-  'modes are just build/vertex',
+  'modes are just build/sculpt',
   (await page.evaluate(() => window.editor.mode.name)) === 'build',
 );
 
@@ -64,6 +67,10 @@ const sel0 = await page.evaluate(() => window.editor.boxSel && { ...window.edito
 check('click selects a 1×1 rect', !!sel0 && sel0.axis === 1 && sel0.sign === 1 && sel0.plane === 0);
 await page.keyboard.press('=');
 check('= extrudes one cell up', (await cells()) === 2, `${await cells()} cells`);
+check(
+  'extruded cell is where expected',
+  await page.evaluate(() => window.editor.world.getCell(0, 0, 0)),
+);
 await page.keyboard.press('-');
 await page.keyboard.press('-');
 check('− carves down through the stack', (await cells()) === 0, `${await cells()} cells`);
@@ -101,9 +108,9 @@ await page.keyboard.press('=');
 check('column rect extrudes a wall (+6)', (await cells()) === 18, `${await cells()} cells`);
 s = await stats();
 check('watertight with wall', s.oddEdges === 0, `${s.oddEdges} odd edges`);
-await page.screenshot({ path: `${SHOTS}/40-floorwall.png` });
+await page.screenshot({ path: `${SHOTS}/50-floorwall.png` });
 
-// --- 6. build rect hands its corners to vertex mode on Tab ---------------------------
+// --- 6. build rect hands its corners to sculpt mode on Tab ---------------------------
 await dragWorld({ x: 1.5, y: 0, z: 0.5 }, { x: 2.5, y: 0, z: 0.5 }); // two floor-top faces
 await page.keyboard.press('Tab');
 const handoff = await page.evaluate(() => ({
@@ -113,7 +120,7 @@ const handoff = await page.evaluate(() => ({
 check('Tab hands rect corners to sculpt mode', handoff.mode === 'sculpt' && handoff.n === 6, `${handoff.n} corners`);
 await page.keyboard.press('Escape');
 
-// --- 7. exact visibility: concave junction shown, buried corners hidden ---------------
+// --- 7. visibility: concave junction shown, buried corners hidden ---------------
 const vis = await page.evaluate(() => {
   const vm = window.editor.modes.sculpt;
   const visible = new Set(vm.visibleHandles().map((h) => h.lattice));
@@ -129,36 +136,35 @@ check('buried bottom corner is hidden', !vis.buried);
 await freshScene();
 await page.locator('#btn-seed').click();
 await page.waitForTimeout(100);
-const lone = await page.evaluate(() => {
-  const vm = window.editor.modes.sculpt;
-  return { all: vm.handles().length, visible: vm.visibleHandles().length };
-});
+const lone = await page.evaluate(() => ({
+  all: window.editor.world.surfaceCornerCount(),
+  visible: window.editor.modes.sculpt.visibleHandles().length,
+}));
 check('lone cube shows exactly 7 of 8 corners', lone.all === 8 && lone.visible === 7, `${lone.visible}/${lone.all}`);
 
 // --- 8. extrusion extrapolates offsets; stale offsets get cleaned ----------------------
-await page.keyboard.press('1'); // back to build mode (Tab test left us in vertex)
+await page.keyboard.press('1'); // back to build mode (Tab test left us in sculpt)
 await page.evaluate(() => {
-  window.editor.doc.writeShiftsLive([
-    ['1,0,0', { x: 0, y: -0.5, z: 0 }],
-    ['1,0,1', { x: 0, y: -0.5, z: 0 }],
-    ['9,9,9', { x: 0.3, y: 0.3, z: 0.3 }], // stale offset floating in space
-  ]);
+  const w = window.editor.world;
+  w.setShiftRaw(1, 0, 0, [0, -0.5, 0]);
+  w.setShiftRaw(1, 0, 1, [0, -0.5, 0]);
+  w.setShiftRaw(9, 9, 9, [0.3, 0.3, 0.3]); // stale offset floating in space
 });
 await clickWorld({ x: 1, y: -0.5, z: 0.5 }); // +x face of the seed (ramp side)
 await page.keyboard.press('=');
 const ramp = await page.evaluate(() => {
-  const a = window.editor.doc.shifts.get('2,0,0');
-  const b = window.editor.doc.shifts.get('2,0,1');
-  return a && b && Math.abs(a.y + 0.5) < 1e-9 && Math.abs(b.y + 0.5) < 1e-9;
+  const a = window.editor.world.getShift(2, 0, 0);
+  const b = window.editor.world.getShift(2, 0, 1);
+  return a && b && Math.abs(a[1] + 0.5) < 1e-6 && Math.abs(b[1] + 0.5) < 1e-6;
 });
 check('extrusion carries the ramp cross-section', !!ramp);
 check(
   'stale off-surface offsets are cleaned up',
-  await page.evaluate(() => !window.editor.doc.shifts.has('9,9,9')),
+  await page.evaluate(() => window.editor.world.getShift(9, 9, 9) === null),
 );
 
 // --- 8b. O in build mode clears the rect's corner offsets --------------------------------
-await clickWorld({ x: 1.9, y: -0.3, z: 0.5 }); // the extruded ramp cell's +x face
+await clickWorld({ x: 1.9, y: -0.3, z: 0.5 }); // the extruded ramp cell's face
 const rampShiftsBefore = await shifts();
 await page.keyboard.press('o');
 check(
@@ -169,7 +175,7 @@ check(
 await page.keyboard.press('ControlOrMeta+z');
 check('O reset undoes', (await shifts()) === rampShiftsBefore, `${await shifts()} shifts`);
 
-// --- 9. vertex interactions: click selects, second click drags, clamp ±0.5 --------------
+// --- 9. sculpt interactions: click selects, second click drags, clamp ±0.5 --------------
 await freshScene();
 await page.locator('#btn-seed').click();
 await page.keyboard.press('2');
@@ -178,7 +184,7 @@ const corner = await screen({ x: 0, y: 0, z: 0 });
 await page.mouse.click(box.x + corner.x, box.y + corner.y);
 const afterClick = await page.evaluate(() => ({
   sel: [...window.editor.selectedVerts],
-  shifts: window.editor.doc.shifts.size,
+  shifts: window.editor.world.shiftCount(),
 }));
 check(
   'click selects without moving',
@@ -192,7 +198,7 @@ await page.mouse.move(box.x + other.x + 60, box.y + other.y + 60, { steps: 6 });
 await page.mouse.up();
 check(
   'drag from unselected corner box-selects (no move)',
-  await page.evaluate(() => window.editor.doc.shifts.size === 0),
+  (await shifts()) === 0,
 );
 // click the corner, then click-drag it far upward → clamped at +0.5
 await page.mouse.click(box.x + corner.x, box.y + corner.y);
@@ -202,8 +208,8 @@ await page.mouse.down();
 await page.mouse.move(box.x + wayUp.x, box.y + wayUp.y, { steps: 10 });
 await page.mouse.up();
 const clampCheck = await page.evaluate(() => {
-  const v = window.editor.doc.shifts.get('0,0,0');
-  return v && v.y === 0.5 && Math.abs(v.x) <= 0.5 && Math.abs(v.z) <= 0.5;
+  const v = window.editor.world.getShift(0, 0, 0);
+  return v && v[1] === 0.5 && Math.abs(v[0]) <= 0.5 && Math.abs(v[2]) <= 0.5;
 });
 check('second-click drag moves, hard-clamped to ±0.5', !!clampCheck);
 await page.keyboard.press('ControlOrMeta+z');
@@ -221,8 +227,11 @@ check('Y sets the y-axis constraint', con && con.axis === 1 && !con.plane);
 await page.keyboard.press('=');
 const nudged = await page.evaluate(() => {
   const ed = window.editor;
-  const keys = [...ed.selectedVerts].map((k) => k.slice(2));
-  return keys.every((lk) => Math.abs((ed.doc.shifts.get(lk)?.y ?? 0) - 0.5) < 1e-9);
+  const keys = [...ed.selectedVerts].map((k) => k.slice(2).split(',').map(Number));
+  return keys.every((k) => {
+    const v = ed.world.getShift(k[0], k[1], k[2]);
+    return v && Math.abs(v[1] - 0.5) < 1e-6;
+  });
 });
 check('= nudges the selection up along y', nudged);
 await page.keyboard.press('-');
@@ -258,40 +267,23 @@ check(
   path.join(' '),
 );
 
-// --- 12. brushes under the clamp + views ------------------------------------------------------
+// --- 12. selection ops under the clamp + view toggles ------------------------------------------
 await page.keyboard.press('Escape');
 await page.mouse.move(box.x + 200, box.y + 120);
 await page.mouse.down();
 await page.mouse.move(box.x + box.width - 80, box.y + box.height - 80, { steps: 6 });
 await page.mouse.up();
 for (let i = 0; i < 4; i++) await page.keyboard.press('u');
-const clamped = await page.evaluate(() =>
-  [...window.editor.doc.shifts.values()].every(
-    (v) => Math.abs(v.x) <= 0.5 && Math.abs(v.y) <= 0.5 && Math.abs(v.z) <= 0.5,
-  ),
-);
-check('inflate brush respects the clamp', (await shifts()) > 0 && clamped, `${await shifts()} shifts`);
+const maxShift = await page.evaluate(() => window.editor.world.raw.max_shift_abs());
+check('inflate respects the clamp', (await shifts()) > 0 && maxShift <= 0.5 + 1e-6, `${await shifts()} shifts, max ${maxShift.toFixed(3)}`);
 await page.keyboard.press('h');
 s = await stats();
-check('watertight after brushes', s.oddEdges === 0, `${s.oddEdges} odd edges`);
-await page.screenshot({ path: `${SHOTS}/41-sculpt.png` });
+check('watertight after selection ops', s.oddEdges === 0, `${s.oddEdges} odd edges`);
 
 await page.keyboard.press('v');
-const voxelView = await page.evaluate(() => {
-  const ed = window.editor;
-  if (ed.geomView !== 'voxels') return false;
-  for (const f of ed.displaySurface) {
-    for (const v of f.verts) {
-      if (
-        Math.abs(v.x - Math.round(v.x)) > 1e-9 ||
-        Math.abs(v.y - Math.round(v.y)) > 1e-9 ||
-        Math.abs(v.z - Math.round(v.z)) > 1e-9
-      )
-        return false;
-    }
-  }
-  return true;
-});
+const voxelView = await page.evaluate(
+  () => window.editor.geomView === 'voxels' && window.editor.renderer.allPositionsInteger(),
+);
 check('voxel geometry view displays raw integer geometry', voxelView);
 await page.keyboard.press('t');
 const texState = await page.evaluate(() => ({
@@ -302,7 +294,7 @@ check(
   'texture toggle is independent of geometry toggle',
   texState.tex === 'untextured' && texState.geom === 'voxels',
 );
-await page.screenshot({ path: `${SHOTS}/42-voxel-untextured.png` });
+await page.screenshot({ path: `${SHOTS}/51-voxel-untextured.png` });
 await page.keyboard.press('v');
 check(
   'untextured view survives geometry toggle (sculpted+untextured)',
@@ -352,7 +344,7 @@ check(
 );
 s = await stats();
 check('watertight after smooth brush', s.oddEdges === 0, `${s.oddEdges} odd edges`);
-await page.screenshot({ path: `${SHOTS}/43-smoothed.png` });
+await page.screenshot({ path: `${SHOTS}/52-smoothed.png` });
 
 // draw brush with topology: strokes grow new voxels, Alt digs them away
 await page.keyboard.press('f');
@@ -374,7 +366,7 @@ const afterGrow = await cells();
 check('draw brush with topology grows new voxels', afterGrow > beforeGrow, `${beforeGrow} -> ${afterGrow}`);
 s = await stats();
 check('watertight after brush growth', s.oddEdges === 0, `${s.oddEdges} odd edges`);
-await page.screenshot({ path: `${SHOTS}/44-grown.png` });
+await page.screenshot({ path: `${SHOTS}/53-grown.png` });
 
 await page.keyboard.down('Alt');
 for (let i = 0; i < 4; i++) await dragWorld({ x: 1, y: 1, z: -1.5 }, { x: 0.5, y: 1, z: -1.5 }, { steps: 8 });
@@ -397,7 +389,7 @@ check(
   `${oneBefore} -> ${oneAfter} -> ${await cells()}`,
 );
 
-// --- 13. cameras (fly uses Q/E for down/up now) ------------------------------------------------
+// --- 13. cameras (fly uses Q/E for down/up) ------------------------------------------------
 await page.keyboard.press('p');
 check('P switches to fly', (await page.evaluate(() => window.editor.viewport.mode)) === 'fly');
 const p1 = await page.evaluate(() => window.editor.viewport.cameraPos());
@@ -414,22 +406,40 @@ check('Q descends', p3.y < p2.y - 0.3, `Δy ${(p3.y - p2.y).toFixed(2)}`);
 await page.keyboard.press('p');
 check('P returns to orbit', (await page.evaluate(() => window.editor.viewport.mode)) === 'orbit');
 
-// --- 14. save/load roundtrip (format v3: cells + shifts only) ----------------------------------
+// --- 14. save/load roundtrip (format v3) ----------------------------------------------------
+await page.evaluate(() => {
+  const vp = window.editor.viewport;
+  vp.target.set(0, 0.5, 0);
+  vp.yaw = -Math.PI / 4;
+  vp.pitch = 0.55;
+  vp.dist = 14;
+});
+await freshScene();
+await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.setShiftRaw(0, 0, 0, [0.25, 0.5, -0.25]));
 const savedCells = await cells();
 const savedShifts = await shifts();
 const json = await page.evaluate(async () => {
   const { serializeScene } = await import('/src/io.ts');
   return serializeScene(window.editor);
 });
-check('save format is v3 without faces', JSON.parse(json).version === 3 && !('faces' in JSON.parse(json).doc));
-await page.evaluate(() => window.editor.doc.clear());
+const parsed = JSON.parse(json);
+check(
+  'save format is v3 with cells+shifts',
+  parsed.version === 3 && Array.isArray(parsed.doc.cells) && !('faces' in parsed.doc),
+);
+await page.evaluate(() => window.editor.world.clear());
 await page.evaluate(async (data) => {
   const { loadScene } = await import('/src/io.ts');
   await loadScene(window.editor, data);
 }, json);
+const shiftBack = await page.evaluate(() => window.editor.world.getShift(0, 0, 0));
 check(
   'save/load keeps cells and shifts',
-  (await cells()) === savedCells && (await shifts()) === savedShifts,
+  (await cells()) === savedCells &&
+    (await shifts()) === savedShifts &&
+    shiftBack &&
+    Math.abs(shiftBack[0] - 0.25) < 1e-6,
   `${await cells()} cells, ${await shifts()} shifts`,
 );
 

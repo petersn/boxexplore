@@ -239,6 +239,13 @@ export class Viewport {
     return hits.length ? hits[0] : null;
   }
 
+  /** Nearest intersection among a group's direct children (chunk meshes). */
+  pickGroup(e: PointerEvent, group: THREE.Object3D): THREE.Intersection | null {
+    this.setRayFromEvent(e);
+    const hits = this.raycaster.intersectObjects(group.children, false);
+    return hits.length ? hits[0] : null;
+  }
+
   /** Intersect the pointer ray with a working-plane frame. */
   pickFrame(e: PointerEvent, frame: Frame): Vec3 | null {
     this.setRayFromEvent(e);

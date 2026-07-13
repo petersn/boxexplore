@@ -1,7 +1,9 @@
 # boxexplore
 
-Browser 3D metroidvania + integrated Crocotile-3D-style tile editor. Vite + TypeScript +
-Three.js, no UI framework. See README.md for controls and file roles.
+Browser 3D metroidvania + integrated volume editor. **Rust → WASM core**
+(`rust/boxcore`) + TypeScript/three.js shell, no UI framework. See README.md
+for controls/file roles and `docs/representation.md` for the storage design
+and benchmark numbers.
 
 ## Environment
 
@@ -9,69 +11,62 @@ Three.js, no UI framework. See README.md for controls and file roles.
   supporting Node 18). Don't bump to Vite 7/8 unless the default node becomes 20.19+
   (nvm has v20.19.6 installed if ever needed).
 - `npm run dev` (port 5173), `npm run build` (tsc + vite), `npm run typecheck`.
+- `npm run wasm` rebuilds the core (cargo + wasm-bindgen CLI, pinned `=0.2.120`
+  to match the installed CLI) into `src/wasm/` (generated, but committed so the
+  editor runs without a Rust toolchain). After ANY change under `rust/`, run
+  `npm run wasm` or the browser keeps using the stale module.
 
-## Conventions
+## Architecture split (keep it this way)
 
-- The geometry is a **volume**: `doc.cells` (sparse set of solid unit cells, keys
-  `"x,y,z"`) plus `doc.shifts` (lattice-corner displacements, **hard-clamped to
-  ±0.5 per axis** in `Doc.setShift` — every write path clamps). The boundary
-  surface is *derived* in `src/volume.ts` (`buildSurface`) and cached on the editor
-  (`editor.surface`/`surfaceMap`, invalidated via `doc.volVersion`) — never stored.
-  It is watertight by construction; `editor.surfaceStats().oddEdges === 0` asserts it.
-- There is **no working-plane concept**. Build mode is rect-select-then-extrude:
-  click/drag on a face selects an axis-aligned rect (`editor.boxSel`, may overhang
-  into air); `=` extrudes only faces actually present at the plane, `-` carves the
-  whole footprint (and its plane keeps marching even through empty space), via
-  `BuildMode.extrudeStep`. RMB is intentionally unbound (reserved). Tab from build
-  to vertex hands the rect's corners over as the vertex selection.
-- Sculpt mode has three tools (`SculptMode.tool`, keys M/B/F): Select behaves as
-  before (click selects; second click on a selected corner drags; other drags
-  box-select; Ctrl/Cmd+click = shortest-path select; X/Y/Z blender-style
-  constraints, Shift = plane; `=`/`-` nudge along the axis). The Smooth and Draw
-  brushes paint over `editor.brush.radius` with falloff: Smooth relaxes the
-  displaced surface toward neighbor averages (rounds voxel edges even at zero
-  offsets); Draw pushes along vertex normals (Alt inverts). With
-  `editor.brush.topo`, a brush pushing past the ±½ clamp flips the voxel and
-  REBASES the offset onto the new ring (want − dir), keeping the surface
-  continuous so strokes converge instead of oscillating; strokes accumulate into
-  ONE undo op (`writeCellsLive`/`writeShiftsLive` live, `commitApplied` at end,
-  off-surface offsets cleaned at stroke end). Camera fly-down is Q (E/Space up)
-  — Z is reserved for the axis constraint.
-- Cell ops must keep offset hygiene: route shift changes through
-  `planShiftChanges` (volume.ts) — it clears offsets leaving the surface and
-  copies offsets onto newly exposed corners from one layer back along the
-  extrusion axis (so extruding a ramp yields more ramp, and stale invisible
-  offsets never affect new geometry).
-- The document model (`src/model.ts`) uses plain-object vectors (`src/vec.ts`), not
-  THREE vectors — everything in the doc must stay JSON-serializable.
-- All edits go through `EditOp` (`cellsAdded`/`cellsRemoved`/`shifts`) so undo
-  works; vertex drags use `doc.writeShiftsLive` then `editor.commitApplied` on
-  release; build ops `commit` once per keypress.
-- Peter has explicitly waived backwards compatibility until further notice — the
-  free-quad layer is fully deleted (scene format v3 = `{cells, shifts}` only).
-  Future texturing = per-cell-face tile assignment on the derived surface, not
-  new quads. Quad corners are ordered [bl, br, tr, tl] (`CORNERS` in volume.ts).
-- Modes: 1 Build, 2 Sculpt. Grid step is per-mode (`editor.gridStep` accessor;
-  sculpt defaults to 0.5) and only affects sculpt snapping + the reference grid.
-- Camera: `viewport.mode` is 'orbit' (target/dist pivot) or 'fly' (free position +
-  mouselook), toggled with P. The y=0 reference grid centers on the view ray.
-  Two independent view toggles: V = `editor.geomView` 'sculpted'/'voxels'
-  (geometry), T = `editor.texView` 'textured'/'untextured' (untextured paints
-  displacement magnitude into vertex colors; textured will show painted tiles
-  once painting lands). `editor.displaySurface`/`displayMap` hold what's on
-  screen and all previews/overlays must use them; face keys are stable across
-  views so picking/tools work everywhere.
-- Corner handles are visibility-filtered: front-facing adjacent face + voxel-DDA
-  line of sight (`segmentBlocked`, two probe distances along the corner normal).
-  KNOWN imperfect; per Peter, do NOT invest further here — exact depth-buffer
-  visibility arrives with the planned Rust+WASM+wgpu performance rework.
+- **Rust owns**: the document (chunked voxel store: 32³ chunks, Empty/Full
+  tag or 4 KiB bitmap — a one-level VDB; sparse offsets hard-clamped ±0.5 in
+  `Offsets::set`), all edit ops + offset hygiene, diff undo/redo, meshing
+  (AO, sculpted/voxel geometry, untextured tint, LOD levels), visibility,
+  shortest paths, serialization (v3: `{cells, shifts}`).
+- **TS owns**: pointer/keyboard interaction, camera, overlays (ghost,
+  selection, handles, constraint widget, brush ring), per-chunk three.js
+  rendering of core-produced buffers (`src/render.ts`), the toolbar/panels.
+- The shell talks to the core ONLY through `src/world.ts` (`WorldHandle`
+  wraps the wasm `World`, adds change notification — every mutating call
+  must `notify()` so the renderer/autosave react).
+
+## Core invariants (enforced in Rust, tested in `rust/boxcore/tests`)
+
+- Offsets clamp to ±0.5 per axis on every write path; near-zero deletes.
+- A lattice corner is on the surface iff its 8 incident cells are mixed —
+  this local test replaces any global surface set.
+- Cell ops run `plan_shift_changes`: offsets leaving the surface are cleared
+  (globally — stale offsets never survive), newly exposed corners copy from
+  one layer back along the extrusion axis (extruding a ramp yields more ramp).
+- Brushes with `topo` flip voxels past a 0.55 overflow and REBASE the offset
+  onto the new ring (want ∓ dir) so the surface stays continuous; a stroke is
+  ONE undo op; stranded offsets are cleaned at stroke end.
+- Editor semantics: `=` extrudes only faces present at the plane; `-` carves
+  the whole rect footprint and its plane keeps marching through air; RMB is
+  reserved/unbound; Tab hands build-rect corners to sculpt selection.
+- Meshing constants (light, base color, AO curve, diagonal rule, tint) are
+  the visual identity — change them only deliberately.
+
+## UI conventions
+
+- Modes: 1 Build, 2 Sculpt. Sculpt tools M/B/F (select/smooth/draw brush,
+  Alt inverts draw). X/Y/Z blender constraints (Shift = plane), `=`/`-`
+  nudges. Camera: P orbit/fly (fly-down Q, up E/Space — Z is reserved).
+  Views: V sculpted/voxels, T textured/untextured.
+- Grid step is per-mode (`editor.gridStep` accessor; sculpt defaults 0.5).
+- Corner-handle visibility uses voxel DDA + facing test in the core. KNOWN
+  imperfect; per Peter, don't polish — depth-buffer visibility arrives with
+  the wgpu renderer.
+- Peter has waived backwards compatibility until further notice; prefer the
+  cleanest code over format/API stability. Future texturing = per-cell-face
+  tile assignment on the derived surface, NOT free quads.
 
 ## Verification
 
-The end-to-end playwright suite is `scripts/verify.mjs` (seed/rect-extrude/carve/
-overhang/offset extrapolation/clamp/visibility/click-select/constraints/path
-select/handoff/spatial brushes incl. topology growth/views/cameras/undo/
-save-load). Run it with the dev server up: `node scripts/verify.mjs` (from the
-repo root so `playwright` resolves). It drives the real UI and asserts via
-`window.editor`; screenshots land in `/tmp/boxexplore-shots`. Always verify
-interactively, not just tsc.
+- `cargo test` in `rust/boxcore` — parity-critical core behavior.
+- `cargo run --release --bin bench` — representation benchmarks (1000³ cube,
+  terrain, brush latency).
+- `node scripts/verify.mjs` with the dev server up — the 60-check end-to-end
+  suite driving the real UI via `window.editor` (world API + modes).
+  Screenshots land in `/tmp/boxexplore-shots`. Always verify interactively,
+  not just tsc: run the suite after ANY behavior-adjacent change.

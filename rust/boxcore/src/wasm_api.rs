@@ -124,6 +124,24 @@ impl World {
         vec![faces as f64, odd as f64]
     }
 
+    pub fn surface_corner_count(&self) -> u32 {
+        ops::all_surface_corners(&self.store).len() as u32
+    }
+
+    /// Largest |component| over all offsets (test hook for the ±0.5 clamp).
+    pub fn max_shift_abs(&self) -> f32 {
+        let mut m = 0f32;
+        for v in self.offsets.map.values() {
+            m = m.max(v[0].abs()).max(v[1].abs()).max(v[2].abs());
+        }
+        m
+    }
+
+    /// Bulk fill (no history) — world generation and stress testing.
+    pub fn fill_box_raw(&mut self, x0: i32, y0: i32, z0: i32, x1: i32, y1: i32, z1: i32, v: bool) {
+        self.store.fill_box((x0, y0, z0), (x1, y1, z1), v);
+    }
+
     // -- dirty tracking + meshing -----------------------------------------------
 
     pub fn take_dirty(&mut self) -> Vec<i32> {

@@ -6,12 +6,22 @@ surfaces with tiles.
 
 ## Running
 
-Requires Node 18+ (Vite 6).
+Requires Node 18+ (Vite 6). The editor core is Rust compiled to WASM; a
+prebuilt module is checked in under `src/wasm/`, so plain `npm run dev` works
+without a Rust toolchain.
 
 ```sh
 npm install
 npm run dev        # http://localhost:5173
 npm run build      # typecheck + production build to dist/
+npm run wasm       # rebuild the Rust core (needs rustup + wasm-bindgen-cli)
+```
+
+Rust-side tests and benchmarks (from `rust/boxcore/`):
+
+```sh
+cargo test                        # parity-critical behavior tests
+cargo run --release --bin bench   # representation benchmarks
 ```
 
 ## The editor
@@ -71,15 +81,26 @@ shortcut list.
 
 ## Architecture
 
+The document and all heavy lifting live in **Rust → WASM** (`rust/boxcore`):
+a chunked voxel store (32³ chunks, Empty/Full/bitmap — a one-level VDB, so a
+1000³ solid cube costs ~14 MiB instead of ~37 GiB), sparse clamped offsets,
+every edit operation with offset hygiene, diff-based undo/redo, per-chunk
+meshing with AO and LOD levels, visibility queries, and serialization.
+TypeScript is the shell: input, camera, overlays, and three.js drawing the
+buffers the core produces. See `docs/representation.md` for the design
+discussion and benchmark numbers.
+
 | file | role |
 | --- | --- |
-| `src/model.ts` | document: volume cells + clamped lattice shifts, reversible edit ops, undo |
-| `src/volume.ts` | surface derivation, AO, offset hygiene/extrapolation, visibility DDA |
-| `src/meshbuilder.ts` | doc → BufferGeometry (shaded volume, overlay quads), picking map |
+| `rust/boxcore/src/store.rs` | chunked volume + sparse clamped offsets |
+| `rust/boxcore/src/mesh.rs` | per-chunk surface extraction, AO, LOD meshes |
+| `rust/boxcore/src/ops.rs` | edit ops, hygiene, brushes, paths, visibility, undo |
+| `rust/boxcore/src/wasm_api.rs` | the `World` facade the shell talks to |
+| `src/world.ts` | typed wrapper + change notification |
+| `src/render.ts` | per-chunk three.js meshes, dirty sync, distance LOD |
+| `src/build.ts` / `src/sculpt.ts` | the two editor modes (input → core calls) |
 | `src/viewport.ts` | renderer, orbit/fly camera, ray picking, grid visuals |
-| `src/build.ts` / `src/sculpt.ts` | the two editor modes |
 | `src/tileset.ts` / `src/palette.ts` | tileset canvas + picker (texturing comes later) |
-| `src/frame.ts` | small plane-frame math helpers (grid, ray picking) |
 | `src/editor.ts` | glue: input routing, overlays, toolbar, persistence |
 
 The scene format is plain JSON
@@ -95,5 +116,5 @@ runtime will consume it directly.
 - Select/move/copy volume regions; sub-unit cells for fine geometry
 - Prefab objects with live-updating instances
 - Game runtime: player controller, collision from the derived surface, room/chunk streaming
-- A major performance rework: move surface derivation, visibility, and brush
-  math to Rust + WASM + wgpu, with depth-buffer-exact vertex visibility
+- wgpu renderer: persistent GPU buffers, depth-buffer-exact vertex
+  visibility, bitwise meshing, greedy meshing for painted flats

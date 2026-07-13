@@ -1,41 +1,25 @@
 import type { Editor } from './editor';
 import type { Frame } from './frame';
-import type { Quad } from './meshbuilder';
-import type { ShiftChange } from './model';
+import { type Quad, quadFromBuffer } from './meshbuilder';
 import { type Vec3, v3 } from './vec';
-import { type Cell, type VolFace, cellKey, planShiftChanges, planeAxes } from './volume';
+import type { FaceRef, LatticeKey, RectSel } from './world';
 
-/**
- * A rectangular face-plane selection: an axis-aligned rect of footprint cells
- * on the plane of a clicked face. It may overhang into air or across other
- * geometry — extrusion fills the whole rect, carving removes whatever solid
- * the rect covers. `plane` is the integer lattice coordinate of the working
- * face plane along `axis`; it follows the surface as you extrude/carve.
- */
-export interface BoxSel {
-  axis: 0 | 1 | 2;
-  sign: 1 | -1;
-  plane: number;
-  a0: number;
-  a1: number;
-  b0: number;
-  b1: number;
-}
+/** The two in-plane axes for a face axis (matches the core's convention). */
+const planeAxes = (axis: number): [number, number] => [axis === 0 ? 1 : 0, axis === 2 ? 1 : 2];
 
-type Drag = { kind: 'rect'; sel: BoxSel } | null;
+type Drag = { kind: 'rect'; sel: RectSel } | null;
 
 /**
  * Build mode — the Jarlsberg flow. Click a face (click = 1×1) or drag across
  * its plane to select an axis-aligned rectangle (overhang allowed), then press
  * `=` to extrude the faces present in the rect out one layer, or `-` to carve
  * one layer of the rect's footprint in (the carve plane keeps marching even
- * once nothing is left). The "+ Voxel" toolbar button seeds a cell when
- * there's nothing to click.
+ * once nothing is left). All ops execute in the Rust core.
  */
 export class BuildMode {
   readonly name = 'build';
   private drag: Drag = null;
-  private hoverKey: string | null = null;
+  private hoverFace: FaceRef | null = null;
 
   constructor(private ed: Editor) {}
 
@@ -45,7 +29,7 @@ export class BuildMode {
 
   exit(): void {
     this.drag = null;
-    this.hoverKey = null;
+    this.hoverFace = null;
     this.ed.setGhost(null);
     if (this.ed.boxSel) {
       this.ed.boxSel = null;
@@ -56,7 +40,7 @@ export class BuildMode {
   // -- selection geometry helpers ------------------------------------------------
 
   /** World-space frame of the selection plane (for ray intersection). */
-  private planeFrame(sel: BoxSel): Frame {
+  private planeFrame(sel: RectSel): Frame {
     const [a1, a2] = planeAxes(sel.axis);
     const origin = [0, 0, 0];
     origin[sel.axis] = sel.plane;
@@ -74,33 +58,39 @@ export class BuildMode {
     };
   }
 
-  private selFromFace(vf: VolFace): BoxSel {
-    const axis = (vf.dir >> 1) as 0 | 1 | 2;
-    const sign = vf.dir % 2 === 0 ? 1 : -1;
+  private selFromFace(f: FaceRef): RectSel {
+    const axis = (f.dir >> 1) as 0 | 1 | 2;
+    const sign = f.dir % 2 === 0 ? 1 : -1;
     const [a1, a2] = planeAxes(axis);
-    const a = vf.cell[a1];
-    const b = vf.cell[a2];
-    return { axis, sign, plane: vf.cell[axis] + (sign > 0 ? 1 : 0), a0: a, a1: a, b0: b, b1: b };
+    const a = f.cell[a1];
+    const b = f.cell[a2];
+    return {
+      axis,
+      sign,
+      plane: f.cell[axis] + (sign > 0 ? 1 : 0),
+      a0: a,
+      a1: a,
+      b0: b,
+      b1: b,
+    };
   }
 
-  private cellAtLayer(sel: BoxSel, a: number, b: number, layer: number): string {
-    const c = [0, 0, 0];
+  private cellAtLayer(sel: RectSel, a: number, b: number, layer: number): [number, number, number] {
+    const c: [number, number, number] = [0, 0, 0];
     c[sel.axis] = layer;
     const [x1, x2] = planeAxes(sel.axis);
     c[x1] = a;
     c[x2] = b;
-    return cellKey(c[0], c[1], c[2]);
+    return c;
   }
 
-  private updateRect(sel: BoxSel, e: PointerEvent): void {
+  private updateRect(sel: RectSel, e: PointerEvent): void {
     const hit = this.ed.viewport.pickFrame(e, this.planeFrame(sel));
     if (!hit) return;
     const [a1, a2] = planeAxes(sel.axis);
     const p = [hit.x, hit.y, hit.z];
-    const a = Math.floor(p[a1] + 1e-6);
-    const b = Math.floor(p[a2] + 1e-6);
-    sel.a1 = a;
-    sel.b1 = b;
+    sel.a1 = Math.floor(p[a1] + 1e-6);
+    sel.b1 = Math.floor(p[a2] + 1e-6);
   }
 
   /** Overlay quads for the selection rect: real faces where exposed, flat grid quads in air. */
@@ -113,12 +103,12 @@ export class BuildMode {
     const dir = sel.axis * 2 + (sel.sign > 0 ? 0 : 1);
     const inLayer = sel.plane + (sel.sign > 0 ? -1 : 0); // solid-side cell layer
     const [a1, a2] = planeAxes(sel.axis);
+    const sculpted = this.ed.geomView === 'sculpted';
     for (let b = lo1; b <= hi1; b++) {
       for (let a = lo0; a <= hi0; a++) {
-        const key = `${this.cellAtLayer(sel, a, b, inLayer)}:${dir}`;
-        const vf = this.ed.displayMap.get(key);
-        if (vf) {
-          out.push({ verts: vf.verts });
+        const q = this.ed.world.faceQuad(this.cellAtLayer(sel, a, b, inLayer), dir, sculpted);
+        if (q) {
+          out.push(quadFromBuffer(q));
         } else {
           // flat quad on the plane (air / overhang)
           const mk = (da: number, db: number): Vec3 => {
@@ -136,21 +126,9 @@ export class BuildMode {
   }
 
   /** Lattice corners of the faces present in the selection rect (for mode handoff). */
-  selectionLatticeKeys(): string[] {
+  selectionLatticeKeys(): LatticeKey[] {
     const sel = this.ed.boxSel;
-    if (!sel) return [];
-    const keys = new Set<string>();
-    const [lo0, hi0] = [Math.min(sel.a0, sel.a1), Math.max(sel.a0, sel.a1)];
-    const [lo1, hi1] = [Math.min(sel.b0, sel.b1), Math.max(sel.b0, sel.b1)];
-    const dir = sel.axis * 2 + (sel.sign > 0 ? 0 : 1);
-    const inLayer = sel.plane + (sel.sign > 0 ? -1 : 0);
-    for (let b = lo1; b <= hi1; b++) {
-      for (let a = lo0; a <= hi0; a++) {
-        const vf = this.ed.surfaceMap.get(`${this.cellAtLayer(sel, a, b, inLayer)}:${dir}`);
-        if (vf) for (const lk of vf.lattice) keys.add(lk);
-      }
-    }
-    return [...keys];
+    return sel ? this.ed.world.rectCorners(sel) : [];
   }
 
   // -- extrude / carve --------------------------------------------------------------
@@ -160,61 +138,17 @@ export class BuildMode {
     const ed = this.ed;
     const sel = ed.boxSel;
     if (!sel) return;
-    const [lo0, hi0] = [Math.min(sel.a0, sel.a1), Math.max(sel.a0, sel.a1)];
-    const [lo1, hi1] = [Math.min(sel.b0, sel.b1), Math.max(sel.b0, sel.b1)];
-    const out = dir > 0;
-    const outLayer = sel.plane + (sel.sign > 0 ? 0 : -1); // cell just outside the plane
-    const inLayer = sel.plane + (sel.sign > 0 ? -1 : 0); // cell just inside the plane
-    const changed: string[] = [];
-    for (let b = lo1; b <= hi1; b++) {
-      for (let a = lo0; a <= hi0; a++) {
-        if (out) {
-          // extrude only where a face is actually present at the plane — the
-          // rect's air stays air
-          const solid = ed.doc.cells.has(this.cellAtLayer(sel, a, b, inLayer));
-          const outKey = this.cellAtLayer(sel, a, b, outLayer);
-          if (solid && !ed.doc.cells.has(outKey)) changed.push(outKey);
-        } else {
-          // carve the whole footprint, present or not
-          const inKey = this.cellAtLayer(sel, a, b, inLayer);
-          if (ed.doc.cells.has(inKey)) changed.push(inKey);
-        }
-      }
-    }
-    if (out && !changed.length) return; // nothing to grow from — plane stays
-    if (changed.length) {
-      // new surface corners inherit the offset of the corner one layer back
-      // along the extrusion axis (the ring they grew out of)
-      const sourceDelta: Cell = [0, 0, 0];
-      sourceDelta[sel.axis] = out ? -sel.sign : sel.sign;
-      const shifts = planShiftChanges(
-        ed.doc.cells,
-        ed.doc.shifts,
-        ed.surfaceLattice,
-        out ? changed : [],
-        out ? [] : changed,
-        sourceDelta,
-      );
-      ed.commit({
-        cellsAdded: out ? changed : undefined,
-        cellsRemoved: out ? undefined : changed,
-        shifts: shifts.length ? shifts : undefined,
-      });
-    }
+    const changed = ed.world.extrudeRect(sel, dir);
+    if (dir > 0 && !changed) return; // nothing to grow from — plane stays
     // the carve plane keeps marching even through empty space
-    sel.plane += out ? sel.sign : -sel.sign;
+    sel.plane += dir > 0 ? sel.sign : -sel.sign;
     ed.refreshOverlays();
   }
 
   /** Seed a voxel near the origin — the "get unstuck" fallback. */
   seedVoxel(): void {
-    const ed = this.ed;
-    let y = -1;
-    while (ed.doc.cells.has(cellKey(0, y, 0)) && y < 64) y++;
-    const key = cellKey(0, y, 0);
-    const shifts = planShiftChanges(ed.doc.cells, ed.doc.shifts, ed.surfaceLattice, [key], []);
-    ed.commit({ cellsAdded: [key], shifts: shifts.length ? shifts : undefined });
-    ed.refreshOverlays();
+    this.ed.world.seedVoxel();
+    this.ed.refreshOverlays();
   }
 
   // -- events ------------------------------------------------------------------------
@@ -229,7 +163,7 @@ export class BuildMode {
       }
       return;
     }
-    const sel = this.selFromFace(pick.vf);
+    const sel = this.selFromFace(pick.face);
     ed.boxSel = sel;
     this.drag = { kind: 'rect', sel };
     ed.refreshOverlays();
@@ -243,9 +177,17 @@ export class BuildMode {
       return;
     }
     const pick = ed.pickVolFace(e);
-    const key = pick ? pick.vf.key : null;
-    if (key !== this.hoverKey) {
-      this.hoverKey = key;
+    const face = pick ? pick.face : null;
+    const changed =
+      (face === null) !== (this.hoverFace === null) ||
+      (face &&
+        this.hoverFace &&
+        (face.cell[0] !== this.hoverFace.cell[0] ||
+          face.cell[1] !== this.hoverFace.cell[1] ||
+          face.cell[2] !== this.hoverFace.cell[2] ||
+          face.dir !== this.hoverFace.dir));
+    if (changed) {
+      this.hoverFace = face;
       this.refreshGhost();
     }
   }
@@ -259,8 +201,11 @@ export class BuildMode {
   }
 
   private refreshGhost(): void {
-    const vf = this.hoverKey ? this.ed.displayMap.get(this.hoverKey) : null;
-    this.ed.setGhost(vf ? [{ verts: vf.verts }] : null);
+    const f = this.hoverFace;
+    const q = f
+      ? this.ed.world.faceQuad(f.cell, f.dir, this.ed.geomView === 'sculpted')
+      : null;
+    this.ed.setGhost(q ? [quadFromBuffer(q)] : null);
   }
 
   key(e: KeyboardEvent): boolean {
@@ -282,12 +227,7 @@ export class BuildMode {
         // reset the offsets of the selected rect's corners (matches sculpt's O)
         const ed = this.ed;
         if (!ed.boxSel) return false;
-        const shifts: ShiftChange[] = [];
-        for (const lk of this.selectionLatticeKeys()) {
-          const was = ed.doc.shifts.get(lk);
-          if (was) shifts.push({ key: lk, before: { ...was }, after: null });
-        }
-        if (shifts.length) ed.commit({ shifts });
+        ed.world.resetRectOffsets(ed.boxSel);
         return true;
       }
       case 'Escape':
@@ -309,13 +249,10 @@ export class BuildMode {
       const axis = 'xyz'[sel.axis];
       return `${w}×${h} rect on ${sel.sign > 0 ? '+' : '−'}${axis} @ ${sel.plane} — = extrude · − carve · Esc clear`;
     }
-    if (this.hoverKey) {
-      const vf = this.ed.surfaceMap.get(this.hoverKey);
-      if (vf) {
-        const [x, y, z] = vf.cell;
-        return `cell (${x}, ${y}, ${z}) — click or drag a rect, then = extrude / − carve`;
-      }
+    if (this.hoverFace) {
+      const [x, y, z] = this.hoverFace.cell;
+      return `cell (${x}, ${y}, ${z}) — click or drag a rect, then = extrude / − carve`;
     }
-    return this.ed.doc.cells.size ? '' : 'empty scene — press “+ Voxel” to start';
+    return this.ed.world.cellCount() ? '' : 'empty scene — press “+ Voxel” to start';
   }
 }

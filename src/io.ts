@@ -1,4 +1,3 @@
-import type { DocJSON } from './model';
 import type { Editor } from './editor';
 
 export interface SaveData {
@@ -6,7 +5,7 @@ export interface SaveData {
   version: 3;
   tileSize: number;
   tileset: string; // data URL
-  doc: DocJSON;
+  doc: unknown; // { cells: string[], shifts: { "x,y,z": {x,y,z} } } — owned by the Rust core
 }
 
 export function serializeScene(ed: Editor): string {
@@ -15,7 +14,7 @@ export function serializeScene(ed: Editor): string {
     version: 3,
     tileSize: ed.tileset.tileSize,
     tileset: ed.tileset.toDataURL(),
-    doc: ed.doc.toJSON(),
+    doc: ed.world.docJson(),
   };
   return JSON.stringify(data);
 }
@@ -25,7 +24,7 @@ export async function loadScene(ed: Editor, json: string): Promise<void> {
   if (data.app !== 'boxexplore' || !data.doc) throw new Error('not a boxexplore scene file');
   await ed.tileset.loadImage(data.tileset);
   ed.tileset.tileSize = data.tileSize || 16;
-  ed.doc.loadJSON(data.doc);
+  ed.world.loadDoc(data.doc);
   ed.afterSceneLoad();
 }
 

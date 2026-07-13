@@ -259,11 +259,13 @@ pub fn mesh_chunk_lod(store: &ChunkStore, cp: IV, level: u32) -> ChunkMesh {
     let cidx = |x: i32, y: i32, z: i32| ((x + 1) + (y + 1) * pn + (z + 1) * pn * pn) as usize;
 
     let mut hood = Neighborhood::new(store, cp);
+    // coarse occupancy: 0 = empty, 1 = partially solid, 2 = fully solid
     let mut coarse = vec![0u8; (pn * pn * pn) as usize];
     for z in -1..=n {
         for y in -1..=n {
             for x in -1..=n {
-                let mut solid = false;
+                let mut any = false;
+                let mut all = true;
                 'probe: for dz in 0..step {
                     for dy in 0..step {
                         for dx in 0..step {
@@ -272,15 +274,23 @@ pub fn mesh_chunk_lod(store: &ChunkStore, cp: IV, level: u32) -> ChunkMesh {
                                 base.1 + y * step + dy,
                                 base.2 + z * step + dz,
                             )) {
-                                solid = true;
+                                any = true;
+                            } else {
+                                all = false;
+                            }
+                            if any && !all {
                                 break 'probe;
                             }
                         }
                     }
                 }
-                if solid {
-                    coarse[cidx(x, y, z)] = 1;
-                }
+                coarse[cidx(x, y, z)] = if !any {
+                    0
+                } else if all {
+                    2
+                } else {
+                    1
+                };
             }
         }
     }
@@ -292,7 +302,13 @@ pub fn mesh_chunk_lod(store: &ChunkStore, cp: IV, level: u32) -> ChunkMesh {
                     continue;
                 }
                 for (d, dir) in DIRS.iter().enumerate() {
-                    if coarse[cidx(x + dir.0, y + dir.1, z + dir.2)] != 0 {
+                    let np = (x + dir.0, y + dir.1, z + dir.2);
+                    let nv = coarse[cidx(np.0, np.1, np.2)];
+                    let inside = (0..n).contains(&np.0) && (0..n).contains(&np.1) && (0..n).contains(&np.2);
+                    // interior faces cull against any-solid neighbors; faces on
+                    // the chunk border only cull when the neighbor is *fully*
+                    // solid, so LOD-transition cracks stay covered
+                    if (inside && nv != 0) || (!inside && nv == 2) {
                         continue;
                     }
                     // emit a scaled quad, flat shading, coarse AO from coarse field
@@ -320,9 +336,9 @@ pub fn mesh_chunk_lod(store: &ChunkStore, cp: IV, level: u32) -> ChunkMesh {
                         p2[a2] += if ca[a2] == 1 { 1 } else { -1 };
                         let mut pc = p1;
                         pc[a2] += if ca[a2] == 1 { 1 } else { -1 };
-                        let s1 = coarse[cidx(p1[0], p1[1], p1[2])];
-                        let s2 = coarse[cidx(p2[0], p2[1], p2[2])];
-                        let sc = coarse[cidx(pc[0], pc[1], pc[2])];
+                        let s1 = (coarse[cidx(p1[0], p1[1], p1[2])] != 0) as u8;
+                        let s2 = (coarse[cidx(p2[0], p2[1], p2[2])] != 0) as u8;
+                        let sc = (coarse[cidx(pc[0], pc[1], pc[2])] != 0) as u8;
                         ao[k] = if s1 != 0 && s2 != 0 { 0 } else { 3 - s1 - s2 - sc };
                     }
                     let nrm = quad_normal(&verts);
