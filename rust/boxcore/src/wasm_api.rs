@@ -247,6 +247,12 @@ impl World {
         self.commit(op)
     }
 
+    /// sx × sz slab, `thickness` deep, centered in x/z, top at y = 0.
+    pub fn make_slab(&mut self, sx: i32, sz: i32, thickness: i32) -> bool {
+        let op = ops::make_slab(&mut self.store, &mut self.offsets, &mut self.paints, sx, sz, thickness);
+        self.commit(op)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn extrude_rect(
         &mut self,

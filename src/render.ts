@@ -166,14 +166,18 @@ export class ChunkRenderer {
     entry.outline.visible = level === 0;
   }
 
+  /** Scales every LOD/outline threshold: < 1 = coarser sooner (sidebar). */
+  lodScale = 1;
+
   /** Distance-based LOD: swap far chunks to coarse meshes. Call per frame. */
   updateLod(world: WorldHandle, eye: THREE.Vector3): void {
     if (!this.lod) return;
     let budget = 12; // remesh at most a few chunks per frame
+    const k = this.lodScale;
     for (const [key, entry] of this.chunks) {
       const d = entry.center.distanceTo(eye);
-      entry.outline.visible = entry.level === 0 && d < OUTLINE_DIST;
-      const want = d > LOD_DISTS[1] ? 2 : d > LOD_DISTS[0] ? 1 : 0;
+      entry.outline.visible = entry.level === 0 && d < OUTLINE_DIST * k;
+      const want = d > LOD_DISTS[1] * k ? 2 : d > LOD_DISTS[0] * k ? 1 : 0;
       if (want !== entry.level && budget > 0) {
         const [cx, cy, cz] = key.split(',').map(Number);
         this.buildChunk(world, cx, cy, cz, want);

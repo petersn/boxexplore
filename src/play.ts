@@ -8,6 +8,10 @@ const HEIGHT = 3.5;
 const EYE_HEIGHT = 2.9; // camera focus height on the body
 const CAM_RADIUS = 0.5; // spherecast radius for the chase camera
 const FOCUS_SMOOTH = 10; // 1/s — how fast the camera focus catches up
+const BOOM_IN = 9; // 1/s — pull-in toward a shorter clearance (fast)
+const BOOM_OUT = 1.6; // 1/s — ease back out when space opens up (slow)
+const LOOKAHEAD = [0.3, 0.6]; // s — predicted focus positions along velocity
+const WHISKERS = [0.12, 0.24]; // rad — steeper-pitch probes (ceilings ahead)
 
 /**
  * Third-person play mode shell. All physics — collision, gravity, jumping,
@@ -25,6 +29,8 @@ export class PlayController {
   private body: THREE.Mesh;
   private facing = 0;
   private focus = new THREE.Vector3();
+  private boom = -1; // smoothed boom length (-1 = uninitialized)
+  private lastPos = new THREE.Vector3();
 
   constructor(private world: WorldHandle) {
     const geo = new THREE.CylinderGeometry(RADIUS, RADIUS, HEIGHT, 24);
@@ -50,7 +56,9 @@ export class PlayController {
   spawnAt(x: number, z: number): void {
     const p = this.world.playerSpawn(x, z);
     this.pos.set(p.x, p.y, p.z);
+    this.lastPos.copy(this.pos);
     this.focus.set(p.x, p.y + EYE_HEIGHT, p.z);
+    this.boom = -1;
     this.syncMesh();
   }
 
@@ -69,6 +77,7 @@ export class PlayController {
     if (wish.lengthSq() > 0) wish.normalize();
 
     // -- step the Rust controller
+    this.lastPos.copy(this.pos);
     const r = this.world.playerUpdate(dt, wish.x, wish.z, held(' '));
     this.pos.set(r.pos.x, r.pos.y, r.pos.z);
     this.facing = r.facing;
@@ -80,19 +89,38 @@ export class PlayController {
     this.focus.lerp(want, 1 - Math.exp(-FOCUS_SMOOTH * dt));
     viewport.target.copy(this.focus);
 
-    // boom clamp: spherecast from the focus back toward the camera
-    const cp = Math.cos(viewport.pitch);
-    const back = {
-      x: cp * Math.cos(viewport.yaw),
-      y: Math.sin(viewport.pitch),
-      z: cp * Math.sin(viewport.yaw),
-    };
-    viewport.distClamp = this.world.cameraClearance(
-      { x: this.focus.x, y: this.focus.y, z: this.focus.z },
-      back,
-      viewport.dist,
-      CAM_RADIUS,
-    );
+    // -- boom length: predictive whisker casts + asymmetric smoothing.
+    // The primary spherecast is the hard line-of-sight floor (never clip);
+    // the extra samples see occlusion COMING — the focus a beat ahead along
+    // our velocity, and slightly steeper boom pitches that graze ceilings
+    // first — so the camera glides in before LoS actually breaks instead
+    // of snapping the moment it does.
+    const dir = (pitch: number, yaw: number) => ({
+      x: Math.cos(pitch) * Math.cos(yaw),
+      y: Math.sin(pitch),
+      z: Math.cos(pitch) * Math.sin(yaw),
+    });
+    const fp = { x: this.focus.x, y: this.focus.y, z: this.focus.z };
+    const back = dir(viewport.pitch, viewport.yaw);
+    const clear = (from: { x: number; y: number; z: number }, d: typeof back) =>
+      this.world.cameraClearance(from, d, viewport.dist, CAM_RADIUS);
+
+    const primary = clear(fp, back);
+    let target = primary;
+    const vx = (this.pos.x - this.lastPos.x) / Math.max(dt, 1e-4);
+    const vz = (this.pos.z - this.lastPos.z) / Math.max(dt, 1e-4);
+    for (const t of LOOKAHEAD) {
+      target = Math.min(target, clear({ x: fp.x + vx * t, y: fp.y, z: fp.z + vz * t }, back));
+    }
+    for (const a of WHISKERS) {
+      target = Math.min(target, clear(fp, dir(Math.min(viewport.pitch + a, 1.55), viewport.yaw)));
+    }
+
+    if (this.boom < 0) this.boom = target;
+    const k = target < this.boom ? BOOM_IN : BOOM_OUT;
+    this.boom += (target - this.boom) * (1 - Math.exp(-k * dt));
+    this.boom = Math.min(this.boom, primary); // LoS is absolute
+    viewport.distClamp = this.boom;
   }
 
   private syncMesh(): void {

@@ -43,8 +43,10 @@ organic terrain without breaking the seal.
   surface, so repeated presses keep going. Extrusion *carries corner offsets
   with it*: extruding the side of a ramp yields more ramp, and offsets stranded
   off the surface are cleaned up so nothing invisible ever wiggles new geometry.
-  `Esc` clears; `Tab` hands the rect's corners to sculpt mode; the **+ Voxel**
-  toolbar button seeds a cell when the scene is empty.
+  `Esc` clears; `Tab` hands the rect's corners to sculpt mode; the **Slab**
+  toolbar button prompts for dimensions and lays ground centered at the
+  origin (top at y=0). The sidebar's **LOD distance** slider trades draw
+  detail for speed on huge maps.
 - **Sculpt mode (2)** — three tools, switched in the sidebar or with `M`/`B`/`F`
   (Draw is the default):
   - **Select** (`M`): **click** selects a corner; **click a selected corner
@@ -71,7 +73,8 @@ organic terrain without breaking the seal.
   block, grid-locked so neighboring placements tile seamlessly, with `R`
   rotation and `F` flip; the **random scatter** checkbox sprays random
   tiles from the selection with random orientations instead. Strokes fill the
-  whole swept path (no gaps on fast drags), `Alt+click` eyedrops, `X+drag` or
+  whole swept path (no gaps on fast drags), an **only paint unpainted**
+  checkbox protects existing work, `Alt+click` eyedrops, `X+drag` or
   right-click erases (radius-aware). Paints render in the Textured view,
   shaded by the same AO/lambert, and **follow geometry edits**: extruding a
   painted wall yields more painted wall, carving into painted ground keeps
@@ -85,10 +88,13 @@ organic terrain without breaking the seal.
   hand-rolled kinematic controller — sculpted ramps walk exactly as they
   look. Movement is fully swept (no tunneling through steep faces) with an
   iterative depenetration pass ejecting any residual overlap, so the
-  character stays unstuck and above ground. Drag/wheel orbit the chase
-  camera; its focus point is smoothed while swivel stays snappy, and a
-  backward spherecast keeps it out of geometry. `G`/`Esc` returns to
-  editing.
+  character stays unstuck and above ground. Anything stable enough to
+  stand on is stable enough to jump from: wedged or slipping players can
+  always tech out (a hop that kicks off the surface, SM64-style). Drag/
+  wheel orbit the chase camera; its focus point is smoothed while swivel
+  stays snappy, and predictive whisker spherecasts ease the boom in before
+  line of sight breaks — no snap-in when you walk under a ceiling.
+  `G`/`Esc` returns to editing.
 
 The camera has two modes (`P` toggles): **orbit** (CAD-style pivot) and **fly**
 (Minecraft-creative-style — WASD + mouselook, no pivot). Two independent view

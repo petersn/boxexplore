@@ -116,6 +116,13 @@ export class WorldHandle {
 
   // -- build ops ------------------------------------------------------------------
 
+  /** Centered sx × sz slab, `thickness` deep, top at y = 0 (one undo op). */
+  makeSlab(sx: number, sz: number, thickness: number): boolean {
+    const r = this.raw.make_slab(sx, sz, thickness);
+    if (r) this.notify();
+    return r;
+  }
+
   seedVoxel(): boolean {
     const changed = this.raw.seed_voxel();
     if (changed) this.notify();

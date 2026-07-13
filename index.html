@@ -30,7 +30,7 @@
           <button id="btn-tex" title="Toggle texture view: untextured shows displacement as vertex color (T)">Textured</button>
         </span>
         <span class="tb-group">
-          <button id="btn-seed" title="Add a single voxel near the origin (for when the scene is empty)">+ Voxel</button>
+          <button id="btn-slab" title="Add a slab of ground centered on the origin, top at y=0 (prompts for size)">Slab</button>
           <button id="btn-play" title="Run around the world in third person (G, Esc exits)">Play</button>
         </span>
         <span class="tb-group">
@@ -56,6 +56,14 @@
             </div>
             <div class="hint">Drag on the tileset to pick a multi-tile stamp.</div>
           </div>
+          <div class="panel" id="build-panel">
+            <div class="panel-title">View</div>
+            <label class="row">LOD distance
+              <input type="range" id="lod-scale" min="0.25" max="4" step="0.25" value="1" />
+              <span class="value" id="lod-scale-val">1.0×</span>
+            </label>
+            <div class="hint">Lower = coarse meshes kick in closer (faster on huge maps).</div>
+          </div>
           <div class="panel" id="sculpt-panel" hidden>
             <div class="panel-title">Sculpt</div>
             <div class="row" id="tool-buttons">
@@ -80,6 +88,7 @@
               <span class="value" id="paint-radius-val">0.0</span>
             </label>
             <label class="row"><input type="checkbox" id="paint-scatter" /> Random scatter (tiles + orientations)</label>
+            <label class="row"><input type="checkbox" id="paint-unpainted" /> Only paint unpainted faces</label>
           </div>
           <div class="panel">
             <div class="panel-title">Mode</div>
@@ -126,7 +135,7 @@
             <tr><td>O</td><td>Reset the corner offsets of the selected rect's faces</td></tr>
             <tr><td>Esc</td><td>Clear selection</td></tr>
             <tr><td>Tab</td><td>Switch to sculpt mode — a rect selection carries its corners over</td></tr>
-            <tr><td>+ Voxel (toolbar)</td><td>Seed a cell near the origin when the scene is empty</td></tr>
+            <tr><td>Slab (toolbar)</td><td>Lay an X×Z slab of ground (prompts for size), top at y=0</td></tr>
             <tr><th colspan="2">Sculpt mode — tools</th></tr>
             <tr><td>M / B / F</td><td>Select tool / Smooth brush / Draw brush</td></tr>
             <tr><td>Brush drag</td><td>Paint over the radius (sidebar sliders set radius &amp; strength)</td></tr>

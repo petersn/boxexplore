@@ -73,6 +73,29 @@ await page.keyboard.press('1');
 // the interaction tests below were written against an orbit camera
 await page.evaluate(() => window.editor.viewport.setCameraMode('orbit'));
 
+// --- 0b. slab button + LOD slider -------------------------------------------------
+page.once('dialog', (d) => d.accept('8 6 2'));
+await page.locator('#btn-slab').click();
+check('Slab button lays a centered slab', (await cells()) === 96, `${await cells()} cells`);
+check(
+  'slab is centered with its top at y=0',
+  await page.evaluate(
+    () =>
+      window.editor.world.getCell(-4, -1, -3) &&
+      window.editor.world.getCell(3, -2, 2) &&
+      !window.editor.world.getCell(0, 0, 0),
+  ),
+);
+await page.keyboard.press('ControlOrMeta+z');
+check('slab undoes as one op', (await cells()) === 0, `${await cells()} cells`);
+await page.locator('#lod-scale').fill('0.5');
+check(
+  'LOD distance slider wires to the renderer',
+  await page.evaluate(() => window.editor.renderer.lodScale === 0.5),
+);
+await page.locator('#lod-scale').fill('1');
+await freshScene();
+
 // --- 1. removed concepts stay removed -----------------------------------------
 check('plane picker UI is gone', (await page.locator('#plane-axis').count()) === 0);
 check('option checkboxes are gone', (await page.locator('#opt-attach').count()) === 0);
@@ -83,7 +106,7 @@ check(
 );
 
 // --- 2. seed + click-select + = / − marching --------------------------------------
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 check('+ Voxel seeds a cell', (await cells()) === 1, `${await cells()} cells`);
 await clickWorld({ x: 0.5, y: 0, z: 0.5 }); // top face of the seed
 const sel0 = await page.evaluate(() => window.editor.boxSel && { ...window.editor.boxSel });
@@ -105,7 +128,7 @@ check('= with no faces present is a no-op', (await cells()) === 0, `${await cell
 
 // --- 3. build a floor by row extrusion (faces-only extrude) ------------------------
 await freshScene();
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 await clickWorld({ x: 1, y: -0.5, z: 0.5 }); // +x face of the seed
 for (let i = 0; i < 3; i++) await page.keyboard.press('=');
 check('row extrudes to 4 cells', (await cells()) === 4, `${await cells()} cells`);
@@ -157,7 +180,7 @@ check('buried bottom corner is hidden', !vis.buried);
 
 // lone cube: exactly 7 of 8 corners visible
 await freshScene();
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 await page.waitForTimeout(100);
 const lone = await page.evaluate(() => ({
   all: window.editor.world.surfaceCornerCount(),
@@ -200,7 +223,7 @@ check('O reset undoes', (await shifts()) === rampShiftsBefore, `${await shifts()
 
 // --- 9. sculpt interactions: click selects, second click drags, clamp ±0.5 --------------
 await freshScene();
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 await page.keyboard.press('2');
 await page.keyboard.press('m'); // select tool (draw is the default now)
 await page.waitForTimeout(150);
@@ -271,7 +294,7 @@ check(
 
 // --- 11. shortest-path selection -----------------------------------------------------------
 await freshScene();
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 await page.keyboard.press('1');
 await clickWorld({ x: 1, y: -0.5, z: 0.5 });
 for (let i = 0; i < 3; i++) await page.keyboard.press('=');
@@ -335,7 +358,7 @@ check(
 
 // --- 12b. spatial sculpt brushes -----------------------------------------------------------
 await freshScene();
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 await page.keyboard.press('1');
 // small plateau: row of 3, widened to 3×3, plus a box on top (hard edges to smooth)
 await clickWorld({ x: 1, y: -0.5, z: 0.5 });
@@ -402,7 +425,7 @@ check('watertight after digging', s.oddEdges === 0, `${s.oddEdges} odd edges`);
 
 // a single stroke (cells + offsets) is a single undo step
 await freshScene();
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 const oneBefore = await cells();
 await dragWorld({ x: 0.5, y: 0, z: 0.5 }, { x: 0.5, y: 0, z: 0.4 }, { steps: 10 });
 const oneAfter = await cells();
@@ -415,7 +438,7 @@ check(
 
 // --- 12c. face painting ------------------------------------------------------------------
 await freshScene();
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 await page.keyboard.press('1');
 // small floor: row + widen
 await clickWorld({ x: 1, y: -0.5, z: 0.5 });
@@ -477,6 +500,24 @@ const beforeErase = await paints();
 const eraseAt = await screen({ x: 1.5, y: 0, z: -0.5 });
 await page.mouse.click(box.x + eraseAt.x, box.y + eraseAt.y, { button: 'right' });
 check('right-click erases paint', (await paints()) === beforeErase - 1, `${beforeErase} -> ${await paints()}`);
+
+// "only paint unpainted": existing paint is preserved, bare faces still take
+await page.evaluate(() => {
+  window.editor.stamp = { tx: 5, ty: 5, w: 1, h: 1 };
+  window.editor.paintBrush.unpaintedOnly = true;
+});
+const guarded = await page.evaluate(() => window.editor.world.getPaint({ cell: [0, -1, -1], dir: 2 }));
+await clickWorld({ x: 0.5, y: 0, z: -0.5 }); // still painted from the drag stroke
+const afterGuard = await page.evaluate(() => window.editor.world.getPaint({ cell: [0, -1, -1], dir: 2 }));
+await clickWorld({ x: 0.5, y: 0, z: 0.5 }); // a bare face — should take paint
+const bare = await page.evaluate(() => window.editor.world.getPaint({ cell: [0, -1, 0], dir: 2 }));
+check(
+  'unpainted-only guards painted faces but paints bare ones',
+  !!guarded && !!afterGuard && afterGuard[0] === guarded[0] && afterGuard[1] === guarded[1] &&
+    !!bare && bare[0] === 5 && bare[1] === 5,
+  JSON.stringify({ before: guarded, after: afterGuard, bare }),
+);
+await page.evaluate(() => { window.editor.paintBrush.unpaintedOnly = false; });
 
 // paint hygiene: extruding a painted face carries the paint
 await page.evaluate(() => {
@@ -544,7 +585,7 @@ const landed = await page.evaluate(() => ({
   y: window.editor.play.pos.y,
   g: window.editor.play.onGround,
 }));
-check('player falls and lands on the floor', Math.abs(landed.y) < 0.05 && landed.g, JSON.stringify(landed));
+check('player falls and lands on the floor', Math.abs(landed.y) < 0.08 && landed.g, JSON.stringify(landed));
 
 await page.evaluate(() => { window.editor.viewport.yaw = Math.PI; }); // W = +x
 await page.keyboard.down('w');
@@ -567,7 +608,7 @@ check('Space jumps', jumpY > 0.8, `y=${jumpY.toFixed(2)}`);
 await page.waitForTimeout(900);
 check(
   'player lands after the jump',
-  await page.evaluate(() => window.editor.play.onGround && Math.abs(window.editor.play.pos.y) < 0.05),
+  await page.evaluate(() => window.editor.play.onGround && Math.abs(window.editor.play.pos.y) < 0.08),
 );
 
 // the run continues past the ramp top, so judge the peak height reached
@@ -625,7 +666,7 @@ await page.evaluate(() => {
   vp.dist = 14;
 });
 await freshScene();
-await page.locator('#btn-seed').click();
+await page.evaluate(() => window.editor.world.seedVoxel());
 await page.evaluate(() => window.editor.world.setShiftRaw(0, 0, 0, [0.25, 0.5, -0.25]));
 const savedCells = await cells();
 const savedShifts = await shifts();

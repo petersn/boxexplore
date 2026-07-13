@@ -48,6 +48,10 @@ export class World {
     get_shift(x: number, y: number, z: number): Float32Array;
     load_json(json: string): boolean;
     /**
+     * sx × sz slab, `thickness` deep, centered in x/z, top at y = 0.
+     */
+    make_slab(sx: number, sz: number, thickness: number): boolean;
+    /**
      * Largest |component| over all offsets (test hook for the ±0.5 clamp).
      */
     max_shift_abs(): number;
@@ -146,6 +150,7 @@ export interface InitOutput {
     readonly world_get_paint: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly world_get_shift: (a: number, b: number, c: number, d: number) => [number, number];
     readonly world_load_json: (a: number, b: number, c: number) => number;
+    readonly world_make_slab: (a: number, b: number, c: number, d: number) => number;
     readonly world_max_shift_abs: (a: number) => number;
     readonly world_mesh_chunk: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly world_mesh_chunk_lod: (a: number, b: number, c: number, d: number, e: number) => number;

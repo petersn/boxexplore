@@ -230,6 +230,17 @@ export class World {
         return ret !== 0;
     }
     /**
+     * sx × sz slab, `thickness` deep, centered in x/z, top at y = 0.
+     * @param {number} sx
+     * @param {number} sz
+     * @param {number} thickness
+     * @returns {boolean}
+     */
+    make_slab(sx, sz, thickness) {
+        const ret = wasm.world_make_slab(this.__wbg_ptr, sx, sz, thickness);
+        return ret !== 0;
+    }
+    /**
      * Largest |component| over all offsets (test hook for the ±0.5 clamp).
      * @returns {number}
      */

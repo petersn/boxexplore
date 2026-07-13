@@ -434,3 +434,113 @@ fn paint_strokes_hygiene_and_undo() {
     assert!(w.undo());
     assert_eq!(w.get_paint(0, 0, 0, 2), vec![5, 6, 0, 0, 0]);
 }
+
+#[test]
+fn wedged_player_can_always_jump() {
+    use boxcore::physics::Player;
+    let mut store = ChunkStore::new();
+    let mut offsets = Offsets::default();
+    // a 76° V-valley over a pit: two 4-high prows leaning apart, gap 1.0 at
+    // the bottom widening to 3.0 at the top — the 1.8-wide capsule wedges
+    // partway down with no walkable ground anywhere near
+    store.fill_box((-5, -8, -4), (-1, 4, 4), true);
+    store.fill_box((1, -8, -4), (5, 4, 4), true);
+    for z in -4..=4 {
+        offsets.set((-1, 0, z), Some([0.5, 0.0, 0.0]));
+        offsets.set((-1, 4, z), Some([-0.5, 0.0, 0.0]));
+        offsets.set((1, 0, z), Some([-0.5, 0.0, 0.0]));
+        offsets.set((1, 4, z), Some([0.5, 0.0, 0.0]));
+    }
+    let phys = phys_for(&store, &offsets);
+    let mut p = Player::new();
+    p.pos = [0.0, 6.0, 0.0];
+    p.vel = [0.0; 3];
+    // drop in and settle
+    for _ in 0..180 {
+        p.update(&phys, 1.0 / 60.0, [0.0, 0.0], false);
+    }
+    let settled = p.pos[1];
+    for _ in 0..30 {
+        p.update(&phys, 1.0 / 60.0, [0.0, 0.0], false);
+    }
+    assert!(
+        (p.pos[1] - settled).abs() < 0.05,
+        "wedged stably: {} vs {}",
+        p.pos[1],
+        settled
+    );
+    assert!(p.pos[1] > 0.0, "held by the wedge, not the pit: y={}", p.pos[1]);
+    // stability implies support: the jump must work even though no walkable
+    // ground is in reach (this is the "stable but can't jump" regression)
+    p.update(&phys, 1.0 / 60.0, [0.0, 0.0], true);
+    let mut apex = settled;
+    for _ in 0..30 {
+        p.update(&phys, 1.0 / 60.0, [0.0, 0.0], false);
+        apex = apex.max(p.pos[1]);
+    }
+    assert!(apex > settled + 1.5, "jumped out of the wedge: apex {apex} from {settled}");
+}
+
+#[test]
+fn slab_op_builds_and_undoes() {
+    use boxcore::wasm_api::World;
+    let mut w = World::new();
+    assert!(w.make_slab(5, 3, 2));
+    assert_eq!(w.cell_count(), 30.0);
+    assert!(w.get_cell(-2, -1, -1) && w.get_cell(2, -2, 1), "centered, top at y=0");
+    assert!(!w.get_cell(0, 0, 0), "nothing above y=0");
+    assert!(!w.get_cell(3, -1, 0), "x extent respected");
+    w.undo();
+    assert_eq!(w.cell_count(), 0.0);
+}
+
+// Regression: at fine timesteps the ramp base once became a limit cycle
+// (ray snap penetrated the slope, depenetration pushed back, step-up
+// never fired). Climbing must work at any frame rate.
+
+
+fn climb_scenario(dt: f32) -> f32 {
+    use boxcore::physics::{Phys, Player};
+    let mut store = ChunkStore::new();
+    let mut offsets = Offsets::default();
+    let paints = Paints::default();
+    store.fill_box((-10, -1, -10), (20, 0, 10), true);
+    for i in 0..4 {
+        store.fill_box((5 + i, 0, -2), (6 + i, 1 + i, 2), true);
+    }
+    for i in 0..4 {
+        for z in -2..=2 {
+            offsets.set((5 + i, 1 + i, z), Some([0.0, -0.5, 0.0]));
+            offsets.set((6 + i, 1 + i, z), Some([0.0, 0.5, 0.0]));
+        }
+    }
+    let mut phys = Phys::new();
+    for cp in store.chunks.keys() {
+        phys.dirty.insert(*cp);
+    }
+    phys.sync(&store, &offsets, &paints);
+    let mut p = Player::new();
+    p.spawn_at(&phys, 0.0, 0.0);
+    let steps = |t: f32| (t / dt) as usize;
+    for _ in 0..steps(1.0) { p.update(&phys, dt, [0.0, 0.0], false); }
+    for _ in 0..steps(0.6) { p.update(&phys, dt, [1.0, 0.0], false); }
+    for _ in 0..steps(0.4) { p.update(&phys, dt, [-1.0, 0.0], false); }
+    for _ in 0..steps(0.3) { p.update(&phys, dt, [0.0, 0.0], false); }
+    p.update(&phys, dt, [0.0, 0.0], true);
+    for _ in 0..steps(1.0) { p.update(&phys, dt, [0.0, 0.0], false); }
+    let mut peak = p.pos[1];
+    for _ in 0..steps(1.8) {
+        p.update(&phys, dt, [1.0, 0.0], false);
+        peak = peak.max(p.pos[1]);
+    }
+    peak
+}
+
+#[test]
+fn ramp_climb_is_timestep_independent() {
+    for dt in [1.0 / 120.0, 1.0 / 60.0, 1.0 / 30.0, 0.05] {
+        let peak = climb_scenario(dt);
+        println!("dt={:.4} peak={:.3}", dt, peak);
+        assert!(peak > 3.0, "climb works at dt={dt}: peak={peak}");
+    }
+}

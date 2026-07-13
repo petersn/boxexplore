@@ -23,6 +23,7 @@ export const world_get_cell: (a: number, b: number, c: number, d: number) => num
 export const world_get_paint: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const world_get_shift: (a: number, b: number, c: number, d: number) => [number, number];
 export const world_load_json: (a: number, b: number, c: number) => number;
+export const world_make_slab: (a: number, b: number, c: number, d: number) => number;
 export const world_max_shift_abs: (a: number) => number;
 export const world_mesh_chunk: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
 export const world_mesh_chunk_lod: (a: number, b: number, c: number, d: number, e: number) => number;

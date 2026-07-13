@@ -152,7 +152,11 @@ export class PaintMode {
           : [face];
       this.ed.world.eraseFacesBatch(faces);
     } else {
-      this.ed.world.paintFacesBatch(this.targetsFor(point, face));
+      let targets = this.targetsFor(point, face);
+      if (this.ed.paintBrush.unpaintedOnly) {
+        targets = targets.filter((t) => !this.ed.world.getPaint(t.face));
+      }
+      this.ed.world.paintFacesBatch(targets);
     }
   }
 

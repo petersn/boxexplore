@@ -31,7 +31,7 @@ interface Mode {
 
 const MODE_HINTS: Record<ModeName, string> = {
   build: `<b>Click a face</b> or <b>drag a rect</b> on its plane (overhang ok) to select, then <b>=</b> extrude present faces · <b>−</b> carve the footprint<br>
-<b>O</b> reset the rect's corner offsets · <b>Esc</b> clear · <b>+ Voxel</b> (toolbar) seeds a cell when the scene is empty`,
+<b>O</b> reset the rect's corner offsets · <b>Esc</b> clear · <b>Slab</b> (toolbar) lays starter ground`,
   sculpt: `Tools (left panel): <b>M</b> select · <b>B</b> smooth brush · <b>F</b> draw brush (<b>Alt</b> inverts) — brushes paint over a radius<br>
 Select: <b>click</b> · <b>click again</b> drags · <b>drag</b> box (<b>Shift</b> add) · <b>Ctrl/Cmd+click</b> path · <b>X/Y/Z</b> constrain (<b>Shift</b> plane) · <b>=/−</b> nudge · <b>H/U/J/N/O</b> on selection`,
   paint: `<b>Click/drag</b> paint the palette stamp onto faces (multi-tile stamps lay a grid-locked pattern)<br>
@@ -56,7 +56,7 @@ export class Editor {
   /** Spatial brush settings (sculpt mode's Smooth/Draw tools). */
   brush = { radius: 2.5, strength: 0.5, topo: true };
   /** Paint brush settings: radius (0 = single face) and random scatter. */
-  paintBrush = { radius: 0, scatter: false };
+  paintBrush = { radius: 0, scatter: false, unpaintedOnly: false };
   /** Play mode: run around the world with a third-person character. */
   playing = false;
   play: PlayController | null = null;
@@ -111,6 +111,9 @@ export class Editor {
     geom: document.getElementById('btn-geom') as HTMLButtonElement,
     tex: document.getElementById('btn-tex') as HTMLButtonElement,
     tilesetPanel: document.getElementById('tileset-panel') as HTMLDivElement,
+    buildPanel: document.getElementById('build-panel') as HTMLDivElement,
+    lodScale: document.getElementById('lod-scale') as HTMLInputElement,
+    lodScaleVal: document.getElementById('lod-scale-val') as HTMLSpanElement,
     sculptPanel: document.getElementById('sculpt-panel') as HTMLDivElement,
     brushRadius: document.getElementById('brush-radius') as HTMLInputElement,
     brushRadiusVal: document.getElementById('brush-radius-val') as HTMLSpanElement,
@@ -121,6 +124,7 @@ export class Editor {
     paintRadius: document.getElementById('paint-radius') as HTMLInputElement,
     paintRadiusVal: document.getElementById('paint-radius-val') as HTMLSpanElement,
     paintScatter: document.getElementById('paint-scatter') as HTMLInputElement,
+    paintUnpainted: document.getElementById('paint-unpainted') as HTMLInputElement,
   };
 
   constructor(world: WorldHandle) {
@@ -553,6 +557,7 @@ export class Editor {
       for (const lk of handoff) this.selectedVerts.add(`L:${lk}`);
     }
     this.el.tilesetPanel.hidden = name !== 'paint';
+    this.el.buildPanel.hidden = name !== 'build';
     this.el.sculptPanel.hidden = name !== 'sculpt';
     this.el.paintPanel.hidden = name !== 'paint';
     document.querySelectorAll<HTMLButtonElement>('#mode-buttons button').forEach((b) => {
@@ -600,7 +605,18 @@ export class Editor {
     this.world.clear();
     this.selectedVerts.clear();
     this.boxSel = null;
-    (this.modes.build as BuildMode).seedVoxel(); // never leave the user stuck
+    this.world.makeSlab(16, 16, 2); // starter ground: never leave the user stuck
+    this.refreshOverlays();
+  }
+
+  /** Toolbar Slab button: ask for dimensions, lay ground centered at origin. */
+  promptSlab(): void {
+    const raw = prompt('Slab size: width (x)  depth (z)  thickness (y)', '24 24 2');
+    if (!raw) return;
+    const nums = raw.split(/[\s,x×]+/).map((t) => parseInt(t, 10)).filter((n) => Number.isFinite(n));
+    if (nums.length < 2) return;
+    const [sx, sz, t] = [nums[0], nums[1], nums[2] ?? 1];
+    this.world.makeSlab(sx, sz, t);
     this.refreshOverlays();
   }
 
@@ -769,9 +785,7 @@ export class Editor {
     this.el.play.addEventListener('click', () => this.togglePlay());
     this.el.geom.addEventListener('click', () => this.toggleGeomView());
     this.el.tex.addEventListener('click', () => this.toggleTexView());
-    document.getElementById('btn-seed')!.addEventListener('click', () => {
-      (this.modes.build as BuildMode).seedVoxel();
-    });
+    document.getElementById('btn-slab')!.addEventListener('click', () => this.promptSlab());
     document.querySelectorAll<HTMLButtonElement>('#tool-buttons button').forEach((b) => {
       b.addEventListener('click', () => {
         (this.modes.sculpt as SculptMode).setTool(b.dataset.tool as SculptTool);
@@ -796,6 +810,14 @@ export class Editor {
     this.el.paintScatter.addEventListener('change', () => {
       this.paintBrush.scatter = this.el.paintScatter.checked;
       (this.modes.paint as PaintMode).refreshPreview();
+    });
+    this.el.paintUnpainted.addEventListener('change', () => {
+      this.paintBrush.unpaintedOnly = this.el.paintUnpainted.checked;
+    });
+    this.el.lodScale.addEventListener('input', () => {
+      const v = parseFloat(this.el.lodScale.value);
+      this.renderer.lodScale = v;
+      this.el.lodScaleVal.textContent = `${v.toFixed(2).replace(/\.?0+$/, '')}×`;
     });
     document.getElementById('btn-undo')!.addEventListener('click', () => this.undo());
     document.getElementById('btn-redo')!.addEventListener('click', () => this.redo());

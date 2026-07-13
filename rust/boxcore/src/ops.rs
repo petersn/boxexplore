@@ -795,6 +795,40 @@ pub fn seed_voxel(store: &mut ChunkStore, offsets: &mut Offsets, paints: &mut Pa
     op
 }
 
+/// One undoable op: an sx × sz slab, `thickness` cells deep, centered on the
+/// origin in x/z with its top surface at y = 0.
+pub fn make_slab(
+    store: &mut ChunkStore,
+    offsets: &mut Offsets,
+    paints: &mut Paints,
+    sx: i32,
+    sz: i32,
+    thickness: i32,
+) -> EditOp {
+    let (sx, sz, t) = (sx.clamp(1, 2048), sz.clamp(1, 2048), thickness.clamp(1, 256));
+    let x0 = -(sx / 2);
+    let z0 = -(sz / 2);
+    let mut added = Vec::new();
+    for x in x0..x0 + sx {
+        for y in -t..0 {
+            for z in z0..z0 + sz {
+                if !store.get((x, y, z)) {
+                    added.push((x, y, z));
+                }
+            }
+        }
+    }
+    let (shifts, paint_changes) = plan_edit_changes(store, offsets, paints, &added, &[], None);
+    let op = EditOp {
+        added: added.iter().map(|c| pack(*c)).collect(),
+        removed: vec![],
+        shifts,
+        paints: paint_changes,
+    };
+    apply_op(store, offsets, paints, &op, true);
+    op
+}
+
 // ---------------------------------------------------------------------------
 // Sculpt: drags, selection operators, spatial brushes
 // ---------------------------------------------------------------------------

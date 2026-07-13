@@ -279,8 +279,23 @@ pub struct Player {
     /// Depenetration failed to fully resolve this tick — the caller should
     /// try a coarser rescue (the wasm layer scans the voxel store upward).
     pub embedded: bool,
+    /// Resting against unwalkable geometry and losing traction (SM64-style
+    /// slip): downhill acceleration applies, but jumping out is allowed.
+    pub sliding: bool,
     coyote: f32,
     jump_held: bool,
+    /// Consecutive ticks spent effectively stationary without walkable
+    /// ground (wedged in a crease, balanced on a ledge lip). Stability
+    /// implies support: a couple of these grant jumping, so "I'm not
+    /// falling but I can't jump" can't happen.
+    rest_ticks: u32,
+    /// Normal of the unwalkable surface currently carrying us (slide or
+    /// arrested fall). A jump from such a brace kicks off along it, so
+    /// steep faces can be teched out of but never ratcheted up.
+    brace_normal: V3,
+    /// Control lockout after a tech-out jump — the kick must actually
+    /// separate us from the face before input can steer back into it.
+    tech_timer: f32,
     spawn: V3,
 }
 
@@ -292,8 +307,12 @@ impl Player {
             on_ground: false,
             facing: 0.0,
             embedded: false,
+            sliding: false,
             coyote: 0.0,
             jump_held: false,
+            rest_ticks: 0,
+            brace_normal: [0.0; 3],
+            tech_timer: 0.0,
             spawn: [0.0, 2.0, 0.0],
         }
     }
@@ -334,13 +353,15 @@ impl Player {
         best
     }
 
-    /// Horizontal move with capsule sweeps + wall sliding.
-    fn move_horizontal(&mut self, phys: &Phys, mut mx: f32, mut mz: f32) {
+    /// Horizontal move with capsule sweeps + wall sliding. Returns whether a
+    /// non-walkable contact (a wall) blocked part of the motion.
+    fn move_horizontal(&mut self, phys: &Phys, mut mx: f32, mut mz: f32) -> bool {
         let half = (HEIGHT - 2.0 * RADIUS) / 2.0;
+        let mut hit_wall = false;
         for _ in 0..2 {
             let len = (mx * mx + mz * mz).sqrt();
             if len < 1e-6 {
-                return;
+                return hit_wall;
             }
             let dir = [mx / len, 0.0, mz / len];
             // capsule lifted slightly so walkable ramps don't read as walls
@@ -353,22 +374,33 @@ impl Player {
                 None => {
                     self.pos[0] += mx;
                     self.pos[2] += mz;
-                    return;
+                    return hit_wall;
                 }
                 Some((toi, n)) => {
                     let allowed = (toi - SKIN).clamp(0.0, len);
                     self.pos[0] += dir[0] * allowed;
                     self.pos[2] += dir[2] * allowed;
+                    let rest = len - allowed;
+                    let rx = dir[0] * rest;
+                    let rz = dir[2] * rest;
+                    if n[1] >= MAX_SLOPE_COS {
+                        // walkable surface, not a wall: deflect the remaining
+                        // motion along the slope plane in full 3D, riding up
+                        // the incline (ground snap trues up the height after)
+                        let dot = rx * n[0] + rz * n[2];
+                        self.pos[0] += rx - n[0] * dot;
+                        self.pos[1] += -n[1] * dot;
+                        self.pos[2] += rz - n[2] * dot;
+                        return hit_wall;
+                    }
+                    hit_wall = true;
                     // slide the remainder (and velocity) along the wall
                     let mut wall = [n[0], 0.0, n[2]];
                     let wl = (wall[0] * wall[0] + wall[2] * wall[2]).sqrt();
                     if wl < 1e-6 {
-                        return;
+                        return hit_wall;
                     }
                     wall = [wall[0] / wl, 0.0, wall[2] / wl];
-                    let rest = len - allowed;
-                    let rx = dir[0] * rest;
-                    let rz = dir[2] * rest;
                     let into = rx * wall[0] + rz * wall[2];
                     mx = rx - wall[0] * into;
                     mz = rz - wall[2] * into;
@@ -380,6 +412,7 @@ impl Player {
                 }
             }
         }
+        hit_wall
     }
 
     fn capsule_center(&self) -> V3 {
@@ -387,6 +420,25 @@ impl Player {
     }
 
     const HALF: f32 = (HEIGHT - 2.0 * RADIUS) / 2.0;
+
+    /// Swept ground snap: lower the capsule by up to `max_drop`, stopping at
+    /// first contact — unlike a ray-based teleport, this can never place the
+    /// body inside a slope plane. Returns the contact normal if support hit.
+    fn snap_down(&mut self, phys: &Phys, max_drop: f32) -> Option<V3> {
+        match phys.cast_capsule(
+            self.capsule_center(),
+            Self::HALF,
+            RADIUS,
+            [0.0, -1.0, 0.0],
+            max_drop + SKIN,
+        ) {
+            Some((toi, n)) => {
+                self.pos[1] -= (toi - SKIN).max(0.0);
+                Some(n)
+            }
+            None => None,
+        }
+    }
 
     /// Resolve any overlap with the world (edits under the player, snap
     /// residue, sweep skin) before/after moving.
@@ -399,10 +451,14 @@ impl Player {
     /// One tick: `wish` is the camera-relative input direction (unit or zero).
     pub fn update(&mut self, phys: &Phys, dt: f32, wish: [f32; 2], jump: bool) {
         self.depenetrate(phys);
+        let y_start = self.pos[1];
         let ground = self.ground_hit(phys);
         let feet_gap = ground.map_or(f32::INFINITY, |(y, _)| self.pos[1] - y);
         let walkable = ground.is_some_and(|(_, n)| n[1] >= MAX_SLOPE_COS);
         let supported = walkable && feet_gap <= SNAP_DIST && self.vel[1] <= 0.01;
+        // anything stable enough to stand on is stable enough to jump from
+        let braced = supported || self.sliding || self.rest_ticks >= 2;
+        self.sliding = false;
         self.on_ground = supported;
         self.coyote = if supported {
             0.12
@@ -427,7 +483,14 @@ impl Player {
                 }
             }
         }
-        let control = if supported { 1.0 } else { AIR_CONTROL };
+        self.tech_timer = (self.tech_timer - dt).max(0.0);
+        let control = if self.tech_timer > 0.0 {
+            0.0
+        } else if braced {
+            1.0
+        } else {
+            AIR_CONTROL
+        };
         let k = (ACCEL * control * dt * 0.12).min(1.0);
         self.vel[0] += (target[0] - self.vel[0]) * k;
         self.vel[2] += (target[2] - self.vel[2]) * k;
@@ -435,12 +498,29 @@ impl Player {
             self.vel[1] = 0.0;
         }
 
-        // jumping (with coyote time)
+        // jumping — from solid ground, coyote time, a slide (tech out of
+        // losing traction), or any braced rest against geometry
         if jump {
-            if !self.jump_held && (supported || self.coyote > 0.0) {
-                self.vel[1] = JUMP_V;
+            if !self.jump_held && (braced || self.coyote > 0.0) {
+                if supported || self.coyote > 0.0 {
+                    self.vel[1] = JUMP_V;
+                } else {
+                    // teching out of a steep surface: a weaker hop that
+                    // kicks off along the face normal, with control locked
+                    // out briefly so the kick actually separates — escape
+                    // is always possible, jump-mash climbing never is
+                    self.vel[1] = JUMP_V * 0.75;
+                    let bn = self.brace_normal;
+                    let h = (bn[0] * bn[0] + bn[2] * bn[2]).sqrt();
+                    if h > 1e-3 {
+                        self.vel[0] += bn[0] / h * RUN_SPEED * 0.8;
+                        self.vel[2] += bn[2] / h * RUN_SPEED * 0.8;
+                    }
+                    self.tech_timer = 0.35;
+                }
                 self.coyote = 0.0;
                 self.on_ground = false;
+                self.rest_ticks = 0;
             }
             self.jump_held = true;
         } else {
@@ -455,10 +535,10 @@ impl Player {
         let mx = self.vel[0] * dt;
         let mz = self.vel[2] * dt;
         let before = self.pos;
-        self.move_horizontal(phys, mx, mz);
+        let hit_wall = self.move_horizontal(phys, mx, mz);
         let adv = ((self.pos[0] - before[0]).powi(2) + (self.pos[2] - before[2]).powi(2)).sqrt();
         let want = (mx * mx + mz * mz).sqrt();
-        if self.on_ground && want > 1e-4 && adv < want * 0.5 {
+        if self.on_ground && want > 1e-4 && (hit_wall || adv < want * 0.5) {
             let saved = self.pos;
             self.pos = [before[0], before[1] + STEP_HEIGHT, before[2]];
             self.move_horizontal(phys, mx, mz);
@@ -470,7 +550,7 @@ impl Player {
                     n[1] >= MAX_SLOPE_COS && self.pos[1] - y <= STEP_HEIGHT + 0.1
                 });
             if ok {
-                self.pos[1] = g2.unwrap().0;
+                self.snap_down(phys, STEP_HEIGHT + 0.1);
             } else {
                 self.pos = saved;
             }
@@ -494,9 +574,11 @@ impl Player {
                     if n[1] >= MAX_SLOPE_COS {
                         self.vel[1] = 0.0;
                         self.on_ground = true;
+                    } else {
+                        // steep surface arrested the fall: remember it as
+                        // the brace (a later slide/rest jump kicks off it)
+                        self.brace_normal = n;
                     }
-                    // steep surface: keep falling; the slide branch below
-                    // (and depenetration) handle resting against it
                 }
                 None => self.pos[1] += dy,
             }
@@ -511,12 +593,15 @@ impl Player {
                 // a high ledge (or a steep face read as "ground") must never
                 // yank the player up onto it
                 if gap <= snap && gap >= -(STEP_HEIGHT + 0.1) && can_stand {
-                    self.pos[1] = gy;
+                    if gap > 0.0 {
+                        self.snap_down(phys, gap + 0.02);
+                    }
                     self.vel[1] = 0.0;
                     self.on_ground = true;
                 } else if (-0.05..=0.02).contains(&gap) && !can_stand {
-                    // too steep: slide downhill (no position change — the
-                    // swept fall already stopped at the surface)
+                    // too steep: losing traction — slide downhill
+                    self.sliding = true;
+                    self.brace_normal = n;
                     self.vel[0] += n[0] * GRAVITY * dt * 0.8;
                     self.vel[2] += n[2] * GRAVITY * dt * 0.8;
                     self.vel[1] = self.vel[1].min(-0.5);
@@ -526,6 +611,18 @@ impl Player {
 
         // final safety: eject any overlap this tick's moves left behind
         self.depenetrate(phys);
+
+        // Rest detection: gravity ran this tick, yet we barely descended and
+        // aren't moving up — something is holding us (a crease, a ledge lip
+        // the ray probes miss). Two such ticks make us "braced" above.
+        let fell = self.pos[1] < y_start - GRAVITY * dt * dt * 0.5 - 0.005;
+        if !self.on_ground && !fell && self.vel[1] <= 0.01 {
+            self.rest_ticks = self.rest_ticks.saturating_add(1);
+            // whatever we rest on carries our weight: don't bank fall speed
+            self.vel[1] = self.vel[1].max(-2.0);
+        } else {
+            self.rest_ticks = 0;
+        }
 
         // fell off the world
         if self.pos[1] < -128.0 {

@@ -55,10 +55,14 @@ and benchmark numbers.
 ## UI conventions
 
 - Modes: 1 Build, 2 Sculpt, 3 Paint, plus Play (G/Esc, `editor.playing`).
+  Toolbar "Slab" prompts for X/Z/thickness and lays ground centered at the
+  origin, top at y=0 (`ops::make_slab`, one undo op; New scene lays 16×16×2).
+  Build panel has the LOD-distance slider (`renderer.lodScale`).
   Paint: radius brush for single tiles, whole-block placement for multi-tile
   stamps (grid-locked, R rotate / F flip — Q/E are the fly camera's,
   textured preview via `setStampGhost`),
-  random-scatter checkbox, sweep interpolation between pointer events
+  random-scatter + only-paint-unpainted checkboxes, sweep interpolation
+  between pointer events
   (`pickGroupAt`), X/Ctrl/RMB erase, Alt eyedrop; entering paint forces the
   Textured view and is the only mode showing the tileset panel. Sculpt
   tools M/B/F (default Draw, topo checkbox default ON; tool persists
@@ -80,7 +84,18 @@ and benchmark numbers.
   `Phys::depenetrate` (parry contact query, deepest-first) ejects residual
   overlap each tick, snaps are bounded (±step up, steep faces never lift),
   and `rescue_player_if_buried` (wasm_api) climbs to the nearest air
-  column if the voxel store says the body is deep inside solid. `src/play.ts` is only input → wish dir,
+  column if the voxel store says the body is deep inside solid. Ground
+  snapping is SWEPT (`snap_down`), never a ray teleport — teleport snaps
+  re-penetrated slope planes and made the ramp base a limit cycle at fine
+  dt (regression test: ramp_climb_is_timestep_independent). Walkable
+  contacts deflect motion 3D-along the slope in `move_horizontal`; only
+  unwalkable ones are walls. "Stable implies jumpable": resting unwalkably
+  (wedge, ledge lip — `rest_ticks`) or sliding grants a tech-out jump
+  (weaker hop + kick along the brace normal + brief control lockout, so
+  steep faces can't be climbed by jump-mashing). Chase camera: predictive
+  whisker spherecasts (velocity lookahead + steeper pitches) feed an
+  asymmetrically smoothed boom (fast in, slow out), hard-floored by true
+  line of sight — no snap-in when walking under ceilings. `src/play.ts` is only input → wish dir,
   the body mesh, and the chase camera: smoothed focus point (swivel stays
   snappy), boom clamped by a backward spherecast (`viewport.distClamp`).
   Editor suspends fly keys + overlays while playing.
