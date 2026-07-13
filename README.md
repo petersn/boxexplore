@@ -43,7 +43,7 @@ organic terrain without breaking the seal.
   surface, so repeated presses keep going. Extrusion *carries corner offsets
   with it*: extruding the side of a ramp yields more ramp, and offsets stranded
   off the surface are cleaned up so nothing invisible ever wiggles new geometry.
-  `Esc` clears; `Tab` hands the rect's corners to vertex mode; the **+ Voxel**
+  `Esc` clears; `Tab` hands the rect's corners to sculpt mode; the **+ Voxel**
   toolbar button seeds a cell when the scene is empty.
 - **Sculpt mode (2)** — three tools, switched in the sidebar or with `M`/`B`/`F`:
   - **Select** (`M`): **click** selects a corner; **click a selected corner
@@ -63,14 +63,6 @@ organic terrain without breaking the seal.
     rebases the offset onto the new ring, so strokes grow (or dig away) real
     geometry while the surface stays continuous and watertight.
 
-The camera has two modes (`P` toggles): **orbit** (CAD-style pivot) and **fly**
-(Minecraft-creative-style — WASD + mouselook, no pivot). Two independent view
-toggles: `V` switches geometry between **Sculpted** and raw **Voxels**, and `T`
-switches **Textured**/**Untextured** — the untextured view paints displacement
-magnitude into the vertex colors (orange = pushed far), and will show painted
-tiles on the textured side once face painting lands. Previews and overlays
-follow the active views.
-
 - **Paint mode (3)** — assign tileset tiles to faces. Click/drag paints the
   palette stamp (multi-tile stamps lay a pattern locked to the face grid, so
   dragging fills coherent brickwork); `Q`/`E` rotate the tile, `F`/`R` flip it,
@@ -79,6 +71,13 @@ follow the active views.
   geometry edits**: extruding a painted wall yields more painted wall, carving
   into painted ground keeps the paint on the new floor, and buried faces are
   cleaned up. Unpainted faces stay flat-shaded gray.
+
+The camera has two modes (`P` toggles): **orbit** (CAD-style pivot) and **fly**
+(Minecraft-creative-style — WASD + mouselook, no pivot). Two independent view
+toggles: `V` switches geometry between **Sculpted** and raw **Voxels**, and `T`
+switches **Textured** (painted tiles) / **Untextured** (displacement magnitude
+as vertex color — orange = pushed far). Previews and overlays follow the
+active views.
 
 Scenes autosave to localStorage and can be saved/loaded as JSON (`Ctrl+S` / `Ctrl+O`);
 the tileset image is embedded in the file. Press `?` in the app for the full
@@ -103,9 +102,9 @@ discussion and benchmark numbers.
 | `rust/boxcore/src/wasm_api.rs` | the `World` facade the shell talks to |
 | `src/world.ts` | typed wrapper + change notification |
 | `src/render.ts` | per-chunk three.js meshes, dirty sync, distance LOD |
-| `src/build.ts` / `src/sculpt.ts` | the two editor modes (input → core calls) |
+| `src/build.ts` / `src/sculpt.ts` / `src/paint.ts` | the three editor modes (input → core calls) |
 | `src/viewport.ts` | renderer, orbit/fly camera, ray picking, grid visuals |
-| `src/tileset.ts` / `src/palette.ts` | tileset canvas + picker (texturing comes later) |
+| `src/tileset.ts` / `src/palette.ts` | tileset canvas + stamp picker |
 | `src/editor.ts` | glue: input routing, overlays, toolbar, persistence |
 
 The scene format is plain JSON (v4:
