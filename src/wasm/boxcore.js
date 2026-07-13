@@ -222,13 +222,14 @@ export class World {
         return v1;
     }
     /**
-     * @param {string} json
+     * Load a v6 binary document (replaces the current one entirely).
+     * @param {Uint8Array} data
      * @returns {boolean}
      */
-    load_json(json) {
-        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    load_bin(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.world_load_json(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.world_load_bin(this.__wbg_ptr, ptr0, len0);
         return ret !== 0;
     }
     /**
@@ -561,21 +562,14 @@ export class World {
         return v1;
     }
     /**
-     * The doc as v5 JSON:
-     * {"full": [...], "bits": {...}, "shifts": {...}, "paints": {...}}.
-     * @returns {string}
+     * Serialize the whole document to the v6 binary format.
+     * @returns {Uint8Array}
      */
-    to_json() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.world_to_json(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
+    to_bin() {
+        const ret = wasm.world_to_bin(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
     }
     /**
      * @returns {boolean}
@@ -646,6 +640,11 @@ function getArrayU32FromWasm0(ptr, len) {
     return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 let cachedFloat32ArrayMemory0 = null;
 function getFloat32ArrayMemory0() {
     if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
@@ -697,40 +696,10 @@ function passArray32ToWasm0(arg, malloc) {
     return ptr;
 }
 
-function passStringToWasm0(arg, malloc, realloc) {
-    if (realloc === undefined) {
-        const buf = cachedTextEncoder.encode(arg);
-        const ptr = malloc(buf.length, 1) >>> 0;
-        getUint8ArrayMemory0().subarray(ptr, ptr + buf.length).set(buf);
-        WASM_VECTOR_LEN = buf.length;
-        return ptr;
-    }
-
-    let len = arg.length;
-    let ptr = malloc(len, 1) >>> 0;
-
-    const mem = getUint8ArrayMemory0();
-
-    let offset = 0;
-
-    for (; offset < len; offset++) {
-        const code = arg.charCodeAt(offset);
-        if (code > 0x7F) break;
-        mem[ptr + offset] = code;
-    }
-    if (offset !== len) {
-        if (offset !== 0) {
-            arg = arg.slice(offset);
-        }
-        ptr = realloc(ptr, len, len = offset + arg.length * 3, 1) >>> 0;
-        const view = getUint8ArrayMemory0().subarray(ptr + offset, ptr + len);
-        const ret = cachedTextEncoder.encodeInto(arg, view);
-
-        offset += ret.written;
-        ptr = realloc(ptr, len, offset, 1) >>> 0;
-    }
-
-    WASM_VECTOR_LEN = offset;
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
     return ptr;
 }
 
@@ -746,19 +715,6 @@ function decodeText(ptr, len) {
         numBytesDecoded = len;
     }
     return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
-}
-
-const cachedTextEncoder = new TextEncoder();
-
-if (!('encodeInto' in cachedTextEncoder)) {
-    cachedTextEncoder.encodeInto = function (arg, view) {
-        const buf = cachedTextEncoder.encode(arg);
-        view.set(buf);
-        return {
-            read: arg.length,
-            written: buf.length
-        };
-    };
 }
 
 let WASM_VECTOR_LEN = 0;

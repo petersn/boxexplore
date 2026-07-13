@@ -538,18 +538,16 @@ await page.keyboard.press('-');
 const inherited = await page.evaluate(() => window.editor.world.getPaint({ cell: [2, -1, -1], dir: 2 }));
 check('carving inherits paint back down', !!inherited && inherited[0] === 3, JSON.stringify(inherited));
 
-// paints roundtrip through save/load
-const pJson = await page.evaluate(async () => {
-  const { serializeScene } = await import('/src/io.ts');
-  return serializeScene(window.editor);
-});
+// paints roundtrip through save/load (binary scenes stay inside one evaluate)
 const beforeRT = await paints();
-await page.evaluate(() => window.editor.world.clear());
-await page.evaluate(async (data) => {
-  const { loadScene } = await import('/src/io.ts');
-  await loadScene(window.editor, data);
-}, pJson);
-check('paints survive save/load', (await paints()) === beforeRT, `${await paints()} paints`);
+const paintsAfterRT = await page.evaluate(async () => {
+  const { serializeScene, loadScene } = await import('/src/io.ts');
+  const bytes = serializeScene(window.editor);
+  window.editor.world.clear();
+  await loadScene(window.editor, bytes);
+  return window.editor.world.paintCount();
+});
+check('paints survive save/load', paintsAfterRT === beforeRT, `${paintsAfterRT} paints`);
 await page.screenshot({ path: `${SHOTS}/57-painted.png` });
 
 // R rotates, F flips; Q/E stay reserved for the fly camera
@@ -657,40 +655,33 @@ check('Q descends', p3.y < p2.y - 0.3, `Δy ${(p3.y - p2.y).toFixed(2)}`);
 await page.keyboard.press('p');
 check('P returns to orbit', (await page.evaluate(() => window.editor.viewport.mode)) === 'orbit');
 
-// --- 14. save/load roundtrip (format v3) ----------------------------------------------------
-await page.evaluate(() => {
-  const vp = window.editor.viewport;
-  vp.target.set(0, 0.5, 0);
-  vp.yaw = -Math.PI / 4;
-  vp.pitch = 0.55;
-  vp.dist = 14;
-});
+// --- 14. save/load roundtrip (binary v6) ----------------------------------------------------
 await freshScene();
 await page.evaluate(() => window.editor.world.seedVoxel());
 await page.evaluate(() => window.editor.world.setShiftRaw(0, 0, 0, [0.25, 0.5, -0.25]));
 const savedCells = await cells();
 const savedShifts = await shifts();
-const json = await page.evaluate(async () => {
-  const { serializeScene } = await import('/src/io.ts');
-  return serializeScene(window.editor);
+const rt = await page.evaluate(async () => {
+  const { serializeScene, loadScene } = await import('/src/io.ts');
+  const bytes = serializeScene(window.editor);
+  const magic = String.fromCharCode(...bytes.slice(0, 4));
+  const version = new DataView(bytes.buffer, bytes.byteOffset).getUint32(4, true);
+  window.editor.world.clear();
+  await loadScene(window.editor, bytes);
+  return {
+    magic,
+    version,
+    size: bytes.length,
+    shift: window.editor.world.getShift(0, 0, 0),
+  };
 });
-const parsed = JSON.parse(json);
-check(
-  'save format is v5 with chunked cells',
-  parsed.version === 5 && Array.isArray(parsed.doc.full) && typeof parsed.doc.bits === 'object' && !('cells' in parsed.doc),
-);
-await page.evaluate(() => window.editor.world.clear());
-await page.evaluate(async (data) => {
-  const { loadScene } = await import('/src/io.ts');
-  await loadScene(window.editor, data);
-}, json);
-const shiftBack = await page.evaluate(() => window.editor.world.getShift(0, 0, 0));
+check('save format is binary v6', rt.magic === 'BOXW' && rt.version === 6, `${rt.size} bytes`);
 check(
   'save/load keeps cells and shifts',
   (await cells()) === savedCells &&
     (await shifts()) === savedShifts &&
-    shiftBack &&
-    Math.abs(shiftBack[0] - 0.25) < 1e-6,
+    !!rt.shift &&
+    Math.abs(rt.shift[0] - 0.25) < 1e-6,
   `${await cells()} cells, ${await shifts()} shifts`,
 );
 

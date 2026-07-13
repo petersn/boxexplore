@@ -106,9 +106,11 @@ a direction-coded vertex color — each offset axis maps to a channel, so +x is
 salmon, −x teal, +y green, −y purple, +z blue, −z olive; stronger push =
 stronger color). Previews and overlays follow the active views.
 
-Scenes autosave to localStorage and can be saved/loaded as JSON (`Ctrl+S` / `Ctrl+O`);
-the tileset image is embedded in the file. Press `?` in the app for the full
-shortcut list.
+Scenes autosave to IndexedDB and can be saved/loaded as binary `.bxw` files
+(`Ctrl+S` / `Ctrl+O`); the tileset image is embedded. Cells are stored per
+chunk (solid chunks as coordinates, boundary chunks run-length encoded), so
+files scale with the world's surface, not its volume. Press `?` in the app
+for the full shortcut list.
 
 ## Architecture
 
@@ -136,9 +138,9 @@ discussion and benchmark numbers.
 | `src/tileset.ts` / `src/palette.ts` | tileset canvas + stamp picker |
 | `src/editor.ts` | glue: input routing, overlays, toolbar, persistence |
 
-The scene format is plain JSON (v4:
-`{ tileSize, tileset: dataURL, doc: { cells, shifts, paints } }`) — the future
-game runtime will consume it directly.
+The scene format is a small binary container (v6: magic, tile size, tileset
+PNG, and the core's chunk-RLE document) — the future game runtime will
+consume it directly.
 
 ## Roadmap
 

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BuildMode } from './build';
-import { downloadText, loadScene, serializeScene } from './io';
+import { downloadBinary, idbGet, idbPut, loadScene, serializeScene } from './io';
 import { type Quad, buildOutlineGeometry, buildQuadGeometry, buildTexturedQuadGeometry } from './meshbuilder';
 import { PaintMode } from './paint';
 import { PlayController } from './play';
@@ -12,7 +12,7 @@ import type { Vec3 } from './vec';
 import { Viewport } from './viewport';
 import type { FaceRef, RectSel, WorldHandle } from './world';
 
-const AUTOSAVE_KEY = 'boxexplore.autosave.v1';
+const AUTOSAVE_KEY = 'autosave';
 const GRID_STEPS = [1, 0.5, 0.25, 0.125];
 
 type ModeName = 'build' | 'sculpt' | 'paint';
@@ -573,19 +573,16 @@ export class Editor {
   private scheduleAutosave(): void {
     if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
     this.autosaveTimer = setTimeout(() => {
-      try {
-        localStorage.setItem(AUTOSAVE_KEY, serializeScene(this));
-      } catch {
-        // storage may be full or unavailable; skip silently
-      }
+      idbPut(AUTOSAVE_KEY, serializeScene(this)).catch(() => {
+        // storage may be unavailable; skip silently
+      });
     }, 600);
   }
 
   private async restoreAutosave(): Promise<void> {
-    const raw = localStorage.getItem(AUTOSAVE_KEY);
-    if (!raw) return;
     try {
-      await loadScene(this, raw);
+      const raw = await idbGet(AUTOSAVE_KEY);
+      if (raw) await loadScene(this, raw);
     } catch (err) {
       console.warn('autosave restore failed', err);
     }
@@ -694,7 +691,7 @@ export class Editor {
             return;
           case 's':
             e.preventDefault();
-            downloadText('scene.boxexplore.json', serializeScene(this));
+            downloadBinary('scene.bxw', serializeScene(this));
             return;
           case 'o':
             e.preventDefault();
@@ -823,7 +820,7 @@ export class Editor {
     document.getElementById('btn-redo')!.addEventListener('click', () => this.redo());
     document.getElementById('btn-new')!.addEventListener('click', () => this.newScene());
     document.getElementById('btn-save')!.addEventListener('click', () => {
-      downloadText('scene.boxexplore.json', serializeScene(this));
+      downloadBinary('scene.bxw', serializeScene(this));
     });
     document.getElementById('btn-open')!.addEventListener('click', () => this.el.fileScene.click());
     document.getElementById('btn-help')!.addEventListener('click', () => {
@@ -842,7 +839,7 @@ export class Editor {
       const file = this.el.fileScene.files?.[0];
       if (file) {
         try {
-          await loadScene(this, await file.text());
+          await loadScene(this, await file.arrayBuffer());
         } catch (err) {
           alert(`Could not load scene: ${err}`);
         }
@@ -864,7 +861,7 @@ export class Editor {
         await this.tileset.loadImage(file);
       } else if (file.name.endsWith('.json')) {
         try {
-          await loadScene(this, await file.text());
+          await loadScene(this, await file.arrayBuffer());
         } catch (err) {
           alert(`Could not load scene: ${err}`);
         }

@@ -7,75 +7,55 @@ use crate::ops::{self, BrushTool, DragState, EditOp, History, PaintStroke, RectS
 use crate::physics::{Phys, Player};
 use crate::store::{pack_paint, unpack_paint, ChunkStore, Offsets, Paints};
 use crate::{unpack, IV};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
-/// v5 doc: cells are stored per 32³ CHUNK (fully-solid chunks as bare
-/// coordinates, partial chunks as a run-length-encoded bitmap), so document
-/// size scales with the surface, never the volume — a 2000×2000×500 slab
-/// serializes in milliseconds instead of OOMing on 2 billion cell strings.
-#[derive(Serialize, Deserialize, Default)]
-struct DocJson {
-    /// Fully solid chunks: "cx,cy,cz".
-    #[serde(default)]
-    full: Vec<String>,
-    /// Partial chunks: "cx,cy,cz" → "<run>x<hexword>,..." (512 u64 words).
-    #[serde(default)]
-    bits: BTreeMap<String, String>,
-    #[serde(default)]
-    shifts: BTreeMap<String, ShiftJson>,
-    /// "x,y,z:d" -> [tx, ty, rot, flipH, flipV]
-    #[serde(default)]
-    paints: BTreeMap<String, [u32; 5]>,
+/// Binary doc (v6). Cells are stored per 32³ CHUNK — fully-solid chunks
+/// as bare coordinates, partial chunks as run-length-encoded bitmaps — so
+/// document size scales with the surface, never the volume. Layout (LE):
+///   "BXD6"
+///   u32 n_full,   n_full  × (i32 cx, cy, cz)
+///   u32 n_bits,   n_bits  × (i32 cx, cy, cz; u16 n_runs; n_runs × (u16 len, u64 word))
+///   u32 n_shifts, n_shifts × (i32 x, y, z; f32 sx, sy, sz)
+///   u32 n_paints, n_paints × (i32 x, y, z; u8 dir; u32 packed)
+const BIN_MAGIC: &[u8; 4] = b"BXD6";
+
+struct Reader<'a> {
+    d: &'a [u8],
+    at: usize,
 }
 
-fn rle_encode(words: &[u64]) -> String {
-    let mut out = String::new();
-    let mut i = 0;
-    while i < words.len() {
-        let w = words[i];
-        let mut run = 1;
-        while i + run < words.len() && words[i + run] == w {
-            run += 1;
-        }
-        if !out.is_empty() {
-            out.push(',');
-        }
-        out.push_str(&format!("{}x{:x}", run, w));
-        i += run;
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let s = self.d.get(self.at..self.at + n)?;
+        self.at += n;
+        Some(s)
     }
-    out
-}
-
-fn rle_decode(s: &str, n: usize) -> Option<Vec<u64>> {
-    let mut out = Vec::with_capacity(n);
-    for seg in s.split(',') {
-        let (run, word) = seg.split_once('x')?;
-        let run: usize = run.parse().ok()?;
-        let word = u64::from_str_radix(word, 16).ok()?;
-        if run == 0 || out.len() + run > n {
-            return None;
-        }
-        out.extend(std::iter::repeat(word).take(run));
+    fn u16(&mut self) -> Option<u16> {
+        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
     }
-    (out.len() == n).then_some(out)
-}
-
-#[derive(Serialize, Deserialize)]
-struct ShiftJson {
-    x: f32,
-    y: f32,
-    z: f32,
-}
-
-fn parse_triple(s: &str) -> Option<IV> {
-    let mut it = s.split(',').map(|p| p.trim().parse::<i32>());
-    match (it.next(), it.next(), it.next()) {
-        (Some(Ok(x)), Some(Ok(y)), Some(Ok(z))) => Some((x, y, z)),
-        _ => None,
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn i32(&mut self) -> Option<i32> {
+        Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn f32(&mut self) -> Option<f32> {
+        Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+    fn iv(&mut self) -> Option<IV> {
+        Some((self.i32()?, self.i32()?, self.i32()?))
     }
 }
+
+fn put_iv(out: &mut Vec<u8>, c: IV) {
+    out.extend_from_slice(&c.0.to_le_bytes());
+    out.extend_from_slice(&c.1.to_le_bytes());
+    out.extend_from_slice(&c.2.to_le_bytes());
+}
+
 
 fn keys_from_triples(t: &[i32]) -> Vec<IV> {
     t.chunks_exact(3).map(|c| (c[0], c[1], c[2])).collect()
@@ -570,81 +550,129 @@ impl World {
 
     // -- io ------------------------------------------------------------------------
 
-    /// The doc as v5 JSON:
-    /// {"full": [...], "bits": {...}, "shifts": {...}, "paints": {...}}.
-    pub fn to_json(&self) -> String {
+    /// Serialize the whole document to the v6 binary format.
+    pub fn to_bin(&self) -> Vec<u8> {
         use crate::store::Chunk;
-        let mut doc = DocJson::default();
+        let mut full: Vec<IV> = Vec::new();
+        let mut bits: Vec<(IV, &[u64])> = Vec::new();
         for (cp, chunk) in &self.store.chunks {
-            let key = format!("{},{},{}", cp.0, cp.1, cp.2);
             match chunk {
-                Chunk::Full => doc.full.push(key),
-                Chunk::Bits(b) => {
-                    doc.bits.insert(key, rle_encode(&b[..]));
+                Chunk::Full => full.push(*cp),
+                Chunk::Bits(b) => bits.push((*cp, &b[..])),
+            }
+        }
+        full.sort();
+        bits.sort_by_key(|(cp, _)| *cp);
+
+        let mut out = Vec::new();
+        out.extend_from_slice(BIN_MAGIC);
+        out.extend_from_slice(&(full.len() as u32).to_le_bytes());
+        for cp in &full {
+            put_iv(&mut out, *cp);
+        }
+        out.extend_from_slice(&(bits.len() as u32).to_le_bytes());
+        for (cp, words) in &bits {
+            put_iv(&mut out, *cp);
+            // RLE the 512 words: (u16 run length, u64 word)
+            let mut runs: Vec<(u16, u64)> = Vec::new();
+            for &w in *words {
+                match runs.last_mut() {
+                    Some((n, last)) if *last == w && *n < u16::MAX => *n += 1,
+                    _ => runs.push((1, w)),
                 }
             }
-        }
-        doc.full.sort();
-        for (k, v) in &self.offsets.map {
-            let l = unpack(*k);
-            doc.shifts.insert(
-                format!("{},{},{}", l.0, l.1, l.2),
-                ShiftJson {
-                    x: v[0],
-                    y: v[1],
-                    z: v[2],
-                },
-            );
-        }
-        for ((ck, d), p) in &self.paints.map {
-            let c = unpack(*ck);
-            let (tx, ty, rot, fh, fv) = unpack_paint(*p);
-            doc.paints.insert(
-                format!("{},{},{}:{}", c.0, c.1, c.2, d),
-                [tx, ty, rot, fh as u32, fv as u32],
-            );
-        }
-        serde_json::to_string(&doc).unwrap_or_else(|_| "{}".into())
-    }
-
-    pub fn load_json(&mut self, json: &str) -> bool {
-        let doc: DocJson = match serde_json::from_str(json) {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
-        self.clear();
-        for s in &doc.full {
-            if let Some(cp) = parse_triple(s) {
-                self.store.insert_chunk_raw(cp, crate::store::Chunk::Full);
+            out.extend_from_slice(&(runs.len() as u16).to_le_bytes());
+            for (n, w) in runs {
+                out.extend_from_slice(&n.to_le_bytes());
+                out.extend_from_slice(&w.to_le_bytes());
             }
         }
-        for (s, rle) in &doc.bits {
-            let (Some(cp), Some(words)) = (parse_triple(s), rle_decode(rle, crate::store::WORDS))
-            else {
-                continue;
-            };
+        out.extend_from_slice(&(self.offsets.map.len() as u32).to_le_bytes());
+        let mut shifts: Vec<_> = self.offsets.map.iter().collect();
+        shifts.sort_by_key(|(k, _)| **k);
+        for (k, v) in shifts {
+            put_iv(&mut out, unpack(*k));
+            for c in v {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&(self.paints.map.len() as u32).to_le_bytes());
+        let mut paints: Vec<_> = self.paints.map.iter().collect();
+        paints.sort_by_key(|((k, d), _)| (*k, *d));
+        for ((ck, d), p) in paints {
+            put_iv(&mut out, unpack(*ck));
+            out.push(*d);
+            out.extend_from_slice(&p.to_le_bytes());
+        }
+        out
+    }
+
+    /// Load a v6 binary document (replaces the current one entirely).
+    pub fn load_bin(&mut self, data: &[u8]) -> bool {
+        let mut r = Reader { d: data, at: 0 };
+        if r.take(4) != Some(BIN_MAGIC) {
+            return false;
+        }
+        // parse fully before touching the document, so a truncated file
+        // can't leave a half-loaded world
+        let Some(parsed) = (|| {
+            let mut full = Vec::new();
+            for _ in 0..r.u32()? {
+                full.push(r.iv()?);
+            }
+            let mut bits = Vec::new();
+            for _ in 0..r.u32()? {
+                let cp = r.iv()?;
+                let mut words: Vec<u64> = Vec::with_capacity(crate::store::WORDS);
+                for _ in 0..r.u16()? {
+                    let n = r.u16()? as usize;
+                    let w = r.u64()?;
+                    if n == 0 || words.len() + n > crate::store::WORDS {
+                        return None;
+                    }
+                    words.extend(std::iter::repeat(w).take(n));
+                }
+                if words.len() != crate::store::WORDS {
+                    return None;
+                }
+                bits.push((cp, words));
+            }
+            let mut shifts = Vec::new();
+            for _ in 0..r.u32()? {
+                let l = r.iv()?;
+                shifts.push((l, [r.f32()?, r.f32()?, r.f32()?]));
+            }
+            let mut paints = Vec::new();
+            for _ in 0..r.u32()? {
+                let c = r.iv()?;
+                let d = *r.take(1)?.first()?;
+                let p = r.u32()?;
+                if d >= 6 {
+                    return None;
+                }
+                paints.push((c, d, p));
+            }
+            Some((full, bits, shifts, paints))
+        })() else {
+            return false;
+        };
+
+        self.clear();
+        let (full, bits, shifts, paints) = parsed;
+        for cp in full {
+            self.store.insert_chunk_raw(cp, crate::store::Chunk::Full);
+        }
+        for (cp, words) in bits {
             let mut b = Box::new([0u64; crate::store::WORDS]);
             b.copy_from_slice(&words);
             self.store.insert_chunk_raw(cp, crate::store::Chunk::Bits(b));
         }
-        for (k, v) in &doc.shifts {
-            if let Some(l) = parse_triple(k) {
-                self.offsets.set(l, Some([v.x, v.y, v.z]));
-                self.store.mark_lattice_dirty(l);
-            }
+        for (l, v) in shifts {
+            self.offsets.set(l, Some(v));
+            self.store.mark_lattice_dirty(l);
         }
-        for (k, v) in &doc.paints {
-            let mut it = k.split(':');
-            let (Some(cell_s), Some(d_s)) = (it.next(), it.next()) else {
-                continue;
-            };
-            let (Some(cell), Ok(d)) = (parse_triple(cell_s), d_s.trim().parse::<u8>()) else {
-                continue;
-            };
-            if d < 6 {
-                self.paints
-                    .set(crate::pack(cell), d, Some(pack_paint(v[0], v[1], v[2], v[3] != 0, v[4] != 0)));
-            }
+        for (c, d, p) in paints {
+            self.paints.set(crate::pack(c), d, Some(p));
         }
         self.history.clear();
         true

@@ -201,7 +201,7 @@ fn shortest_path_follows_edges() {
 }
 
 #[test]
-fn json_roundtrip() {
+fn binary_roundtrip() {
     use boxcore::wasm_api::World;
     let mut w = World::new();
     w.seed_voxel();
@@ -209,12 +209,17 @@ fn json_roundtrip() {
     w.paint_stroke_begin();
     assert!(w.paint_face(0, -1, 0, 2, 3, 4, 1, true, false));
     w.paint_stroke_end();
-    let json = w.to_json();
+    let bin = w.to_bin();
     let mut w2 = World::new();
-    assert!(w2.load_json(&json));
+    assert!(w2.load_bin(&bin));
     assert_eq!(w2.cell_count(), 1.0);
     assert_eq!(w2.get_shift(0, 0, 0), vec![0.25, 0.5, -0.25]);
     assert_eq!(w2.get_paint(0, -1, 0, 2), vec![3, 4, 1, 1, 0]);
+    // determinism (sorted output) + garbage rejection without side effects
+    assert_eq!(bin, w2.to_bin());
+    assert!(!w2.load_bin(b"BXD6\x01\x02"), "truncated file rejected");
+    assert_eq!(w2.cell_count(), 1.0, "failed load leaves the doc untouched");
+    assert!(!w2.load_bin(b"nope"));
 }
 
 #[test]
@@ -622,7 +627,7 @@ fn camera_boom_ignores_grazing_side_walls() {
 }
 
 #[test]
-fn v5_serialization_scales_with_surface_not_volume() {
+fn serialization_scales_with_surface_not_volume() {
     use boxcore::wasm_api::World;
     let mut w = World::new();
     w.make_slab(320, 320, 96); // ~10M cells, mostly Full chunks
@@ -630,14 +635,14 @@ fn v5_serialization_scales_with_surface_not_volume() {
     w.paint_stroke_begin();
     assert!(w.paint_face(0, -1, 0, 2, 3, 4, 1, true, false));
     w.paint_stroke_end();
-    let json = w.to_json();
+    let bin = w.to_bin();
     assert!(
-        json.len() < 400_000,
+        bin.len() < 100_000,
         "doc stays compact for a 10M-cell slab: {} bytes",
-        json.len()
+        bin.len()
     );
     let mut w2 = World::new();
-    assert!(w2.load_json(&json));
+    assert!(w2.load_bin(&bin));
     assert_eq!(w2.cell_count(), w.cell_count());
     assert_eq!(w2.get_shift(0, 0, 0), vec![0.25, -0.5, 0.0]);
     assert_eq!(w2.get_paint(0, -1, 0, 2), vec![3, 4, 1, 1, 0]);

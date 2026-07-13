@@ -388,14 +388,15 @@ export class WorldHandle {
 
   // -- io ---------------------------------------------------------------------------
 
-  /** The doc as a plain object: { cells: string[], shifts: {...} }. */
-  docJson(): unknown {
-    return JSON.parse(this.raw.to_json());
+  /** The document as the core's v6 binary blob. */
+  docBin(): Uint8Array {
+    return this.raw.to_bin();
   }
 
-  loadDoc(doc: unknown): void {
-    this.raw.load_json(JSON.stringify(doc ?? {}));
-    this.notify();
+  loadDocBin(doc: Uint8Array): boolean {
+    const ok = this.raw.load_bin(doc);
+    if (ok) this.notify();
+    return ok;
   }
 
   clear(): void {

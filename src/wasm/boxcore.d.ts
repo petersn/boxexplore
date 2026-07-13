@@ -47,7 +47,10 @@ export class World {
      * [] when absent, [x, y, z] when present.
      */
     get_shift(x: number, y: number, z: number): Float32Array;
-    load_json(json: string): boolean;
+    /**
+     * Load a v6 binary document (replaces the current one entirely).
+     */
+    load_bin(data: Uint8Array): boolean;
     /**
      * sx × sz slab, `thickness` deep, centered in x/z, top at y = 0.
      */
@@ -114,10 +117,9 @@ export class World {
     surface_has_corner(x: number, y: number, z: number): boolean;
     take_dirty(): Int32Array;
     /**
-     * The doc as v5 JSON:
-     * {"full": [...], "bits": {...}, "shifts": {...}, "paints": {...}}.
+     * Serialize the whole document to the v6 binary format.
      */
-    to_json(): string;
+    to_bin(): Uint8Array;
     undo(): boolean;
     /**
      * Interleaved [lat.x, lat.y, lat.z, pos.x, pos.y, pos.z] per visible corner.
@@ -150,7 +152,7 @@ export interface InitOutput {
     readonly world_get_cell: (a: number, b: number, c: number, d: number) => number;
     readonly world_get_paint: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly world_get_shift: (a: number, b: number, c: number, d: number) => [number, number];
-    readonly world_load_json: (a: number, b: number, c: number) => number;
+    readonly world_load_bin: (a: number, b: number, c: number) => number;
     readonly world_make_slab: (a: number, b: number, c: number, d: number) => number;
     readonly world_max_shift_abs: (a: number) => number;
     readonly world_mesh_chunk: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
@@ -184,13 +186,12 @@ export interface InitOutput {
     readonly world_surface_corner_count: (a: number) => number;
     readonly world_surface_has_corner: (a: number, b: number, c: number, d: number) => number;
     readonly world_take_dirty: (a: number) => [number, number];
-    readonly world_to_json: (a: number) => [number, number];
+    readonly world_to_bin: (a: number) => [number, number];
     readonly world_undo: (a: number) => number;
     readonly world_visible_corners: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_start: () => void;
 }
 
