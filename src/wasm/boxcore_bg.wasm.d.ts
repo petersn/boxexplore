@@ -29,6 +29,8 @@ export const world_gfx_frame: (a: number, b: number, c: number, d: number, e: nu
 export const world_gfx_overlay_lines: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
 export const world_gfx_overlay_lines_colored: (a: number, b: number, c: number, d: number) => void;
 export const world_gfx_overlay_quads: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
+export const world_gfx_plan_mode: (a: number, b: number) => void;
+export const world_gfx_plan_preview: (a: number, b: number) => void;
 export const world_gfx_ready: (a: number) => number;
 export const world_gfx_resize: (a: number, b: number, c: number) => void;
 export const world_gfx_set_handles: (a: number, b: number, c: number) => void;
@@ -54,6 +56,14 @@ export const world_paint_face: (a: number, b: number, c: number, d: number, e: n
 export const world_paint_stroke_begin: (a: number) => void;
 export const world_paint_stroke_end: (a: number) => number;
 export const world_pick: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+export const world_plan_brush: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const world_plan_dims: (a: number) => [number, number];
+export const world_plan_generate: (a: number) => number;
+export const world_plan_init: (a: number, b: number, c: number) => void;
+export const world_plan_mask_brush: (a: number, b: number, c: number, d: number, e: number) => void;
+export const world_plan_rgba: (a: number, b: number) => [number, number];
+export const world_plan_sample: (a: number, b: number, c: number) => [number, number];
+export const world_plan_smooth: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const world_player_spawn: (a: number, b: number, c: number) => [number, number];
 export const world_player_update: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const world_rect_corners: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];

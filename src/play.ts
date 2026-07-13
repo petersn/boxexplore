@@ -83,12 +83,12 @@ export class PlayController {
       wz -= fwd.z;
     }
     if (held('d')) {
-      wx -= right.x;
-      wz -= right.z;
-    }
-    if (held('a')) {
       wx += right.x;
       wz += right.z;
+    }
+    if (held('a')) {
+      wx -= right.x;
+      wz -= right.z;
     }
     const wl = Math.hypot(wx, wz);
     if (wl > 1e-9) {

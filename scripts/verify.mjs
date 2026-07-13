@@ -99,11 +99,6 @@ await freshScene();
 // --- 1. removed concepts stay removed -----------------------------------------
 check('plane picker UI is gone', (await page.locator('#plane-axis').count()) === 0);
 check('option checkboxes are gone', (await page.locator('#opt-attach').count()) === 0);
-await page.keyboard.press('4');
-check(
-  'modes are just build/sculpt',
-  (await page.evaluate(() => window.editor.mode.name)) === 'build',
-);
 
 // --- 2. seed + click-select + = / − marching --------------------------------------
 await page.evaluate(() => window.editor.world.seedVoxel());
@@ -561,6 +556,54 @@ await page.keyboard.press('e');
 const orient = await page.evaluate(() => window.editor.modes.paint.orient);
 check('R rotates and F flips the stamp (Q/E ignored)', orient.rot === 1 && orient.flipH === true && orient.flipV === false, JSON.stringify(orient));
 
+// --- 12e. plan mode: height-map pair, mask, generation --------------------------------
+await freshScene();
+await page.evaluate(() => {
+  document.getElementById('plan-w').value = '64';
+  document.getElementById('plan-h').value = '64';
+});
+await page.keyboard.press('4');
+check(
+  'plan mode opens the split view',
+  await page.evaluate(
+    () => window.editor.mode.name === 'plan' && !document.getElementById('plan-pane').hidden,
+  ),
+);
+const planDims = await page.evaluate(() => [...window.editor.world.raw.plan_dims()]);
+check('plan initialized at the requested size', planDims[0] === 64 && planDims[1] === 64, `${planDims}`);
+await page.evaluate(() => {
+  const raw = window.editor.world.raw;
+  raw.plan_brush(32, 32, 10, 12, 0); // hill on top
+  raw.plan_mask_brush(0, 0, 12, false); // cut a corner off the disc
+});
+check(
+  'plan brushes shape heights and mask (gap clamped)',
+  await page.evaluate(() => {
+    const raw = window.editor.world.raw;
+    const c = raw.plan_sample(32, 32);
+    const v = raw.plan_sample(2, 2);
+    return c[0] > 6 && c[1] <= c[0] - 2 + 1e-4 && v[2] === 0;
+  }),
+);
+check(
+  'contour map renders one pixel per cell',
+  (await page.evaluate(() => window.editor.world.raw.plan_rgba(0).length)) === 64 * 64 * 4,
+);
+page.once('dialog', (d) => d.accept());
+await page.locator('#plan-generate').click();
+await page.waitForTimeout(200);
+check(
+  'Generate world builds the disc and returns to build mode',
+  await page.evaluate(
+    () =>
+      window.editor.mode.name === 'build' &&
+      window.editor.world.cellCount() > 50000 &&
+      window.editor.world.getCell(0, 0, 0) &&
+      !window.editor.world.getCell(-126, 0, -126),
+  ),
+  `${await cells()} cells`,
+);
+
 // --- 12d. play mode: land, run, jump, climb a 45° ramp -------------------------------------
 await freshScene();
 await page.evaluate(() => {
@@ -590,6 +633,16 @@ await page.waitForTimeout(600);
 await page.keyboard.up('w');
 const ran = await page.evaluate(() => window.editor.play.pos.x);
 check('WASD runs the player', ran > 2, `x=${ran.toFixed(1)}`);
+
+// strafing: with yaw=π (W = +x), D must move the player toward +z
+await page.keyboard.down('d');
+await page.waitForTimeout(400);
+await page.keyboard.up('d');
+const strafed = await page.evaluate(() => window.editor.play.pos.z);
+check('D strafes right (camera-relative)', strafed > 0.8, `z=${strafed.toFixed(1)}`);
+await page.keyboard.down('a');
+await page.waitForTimeout(420);
+await page.keyboard.up('a');
 
 // back away from the ramp base so the jump tests flat ground
 await page.keyboard.down('s');

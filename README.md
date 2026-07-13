@@ -82,6 +82,15 @@ organic terrain without breaking the seal.
   painted wall yields more painted wall, carving into painted ground keeps
   the paint on the new floor, buried faces are cleaned up.
 
+- **Plan mode (4)** — design the world at macro scale before building it:
+  a pair of height maps (the top surface and the underside — the world is
+  a floating disc with edges) plus a void mask, at 1 plan cell = 4×4 world
+  cells. The left pane is a zoomable contour-map editor with raise/lower/
+  smooth/void/restore brushes for either surface (the underside always
+  stays ≥2 units below the top); the right pane live-previews the disc
+  world in 3D. **Generate world** replaces the volume with the planned
+  geometry, ready for sculpting and painting at full scale.
+
 - **Play mode (`G`)** — run around your world in third person: a cylinder
   character with gravity, jumping (Space), wall sliding, half-cell auto-step,
   and slope climbing up to 50°. Physics runs in the Rust core: rapier3d BVH

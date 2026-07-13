@@ -2,6 +2,7 @@ import { BuildMode } from './build';
 import { downloadBinary, idbGet, idbPut, loadScene, serializeScene } from './io';
 import { type Quad, quadOutlinePoints, quadsToArray } from './meshbuilder';
 import { PaintMode } from './paint';
+import { PlanMode } from './planner';
 import { PlayController } from './play';
 import { Palette, type Stamp } from './palette';
 import { ChunkRenderer } from './render';
@@ -14,7 +15,7 @@ import type { FaceRef, RectSel, WorldHandle } from './world';
 const AUTOSAVE_KEY = 'autosave';
 const GRID_STEPS = [1, 0.5, 0.25, 0.125];
 
-type ModeName = 'build' | 'sculpt' | 'paint';
+type ModeName = 'build' | 'sculpt' | 'paint' | 'plan';
 
 interface Mode {
   readonly name: ModeName;
@@ -35,6 +36,8 @@ const MODE_HINTS: Record<ModeName, string> = {
 Select: <b>click</b> · <b>click again</b> drags · <b>drag</b> box (<b>Shift</b> add) · <b>Ctrl/Cmd+click</b> path · <b>X/Y/Z</b> constrain (<b>Shift</b> plane) · <b>=/−</b> nudge · <b>H/U/J/N/O</b> on selection`,
   paint: `<b>Click/drag</b> paint the palette stamp onto faces (multi-tile stamps lay a grid-locked pattern)<br>
 <b>R</b> rotate · <b>F</b> flip · <b>Alt+click</b> eyedrop · <b>X+drag</b> or <b>RMB</b> erase · geometry edits carry paint along`,
+  plan: `Design the world at macro scale: <b>two height maps</b> (top + underside) and a <b>void mask</b>, 1 plan cell = 4×4 world cells<br>
+Left: contour editor (<b>LMB</b> brush · <b>RMB/MMB</b> pan · <b>wheel</b> zoom) · Right: live 3D preview · <b>Generate world</b> builds the real volume`,
 };
 
 export class Editor {
@@ -68,7 +71,7 @@ export class Editor {
   } | null = null;
 
   /** Grid snap step is per-mode: sculpt work defaults finer than cell layout. */
-  private gridStepByMode: Record<ModeName, number> = { build: 1, sculpt: 0.5, paint: 1 };
+  private gridStepByMode: Record<ModeName, number> = { build: 1, sculpt: 0.5, paint: 1, plan: 1 };
 
   get gridStep(): number {
     return this.gridStepByMode[this.mode?.name ?? 'build'] ?? 1;
@@ -152,6 +155,7 @@ export class Editor {
       build: new BuildMode(this),
       sculpt: new SculptMode(this),
       paint: new PaintMode(this),
+      plan: new PlanMode(this),
     };
     this.mode = this.modes.build;
 
@@ -213,6 +217,7 @@ export class Editor {
   }
 
   togglePlay(): void {
+    if (!this.playing && this.mode.name === 'plan') this.setMode('build');
     if (this.playing) {
       this.playing = false;
       if (this.play) {
@@ -656,6 +661,9 @@ export class Editor {
           return;
         case '3':
           this.setMode('paint');
+          return;
+        case '4':
+          this.setMode('plan');
           return;
         case 'tab': {
           e.preventDefault();

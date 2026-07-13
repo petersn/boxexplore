@@ -68,7 +68,15 @@ and benchmark numbers.
 
 ## UI conventions
 
-- Modes: 1 Build, 2 Sculpt, 3 Paint, plus Play (G/Esc, `editor.playing`).
+- Modes: 1 Build, 2 Sculpt, 3 Paint, 4 Plan, plus Play (G/Esc,
+  `editor.playing`). Plan mode (`plan.rs` + `src/planner.ts`) designs the
+  world at macro scale: two height maps (top + underside — the world is a
+  floating disc) plus a void mask, 1 plan cell = 4 (PLAN_SCALE) world
+  cells; bottom is clamped ≥ MIN_GAP (2) below top. Split view: left =
+  zoomable contour editor (core renders the RGBA), right = live 3D
+  preview through the renderer (`gfx_plan_mode`/`gfx_plan_preview`);
+  "Generate world" replaces the volume (clears history, like scene load).
+  The plan serializes with the doc (v7 "BXD7").
   Toolbar "Slab" prompts for X/Z/thickness and lays ground centered at the
   origin, top at y=0 (`ops::make_slab`, one undo op; New scene lays 16×16×2).
   Bulk fills are box-recorded in EditOp (`BoxFill` + `prev` overlap cells) and

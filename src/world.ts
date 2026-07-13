@@ -378,6 +378,20 @@ export class WorldHandle {
     };
   }
 
+  // -- planning -----------------------------------------------------------------
+
+  /** Replace the world volume with the plan's geometry (clears history). */
+  planGenerate(): boolean {
+    const ok = this.raw.plan_generate();
+    if (ok) this.notify();
+    return ok;
+  }
+
+  /** Plan edits don't change the volume, but should autosave. */
+  planTouched(): void {
+    this.notify();
+  }
+
   // -- play mode (physics lives in Rust; none of these touch the document) ----------
 
   /** Drop the player onto the ground near (x, z); returns its position. */

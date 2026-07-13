@@ -69,6 +69,14 @@ export class World {
      * 3 constraint lines, 4 brush ring, 5 axes, 6 stamp ghost, 7 player.
      */
     gfx_overlay_quads(which: number, quads: Float32Array, uvs: Float32Array, r: number, gr: number, b: number, a: number): void;
+    /**
+     * Planning mode: draw only the plan preview (plus axes).
+     */
+    gfx_plan_mode(on: boolean): void;
+    /**
+     * Rebuild the 3D disc-world preview from the plan (step = decimation).
+     */
+    gfx_plan_preview(step: number): void;
     gfx_ready(): boolean;
     gfx_resize(w: number, h: number): void;
     /**
@@ -122,6 +130,27 @@ export class World {
      * [] on miss, else [cellx, celly, cellz, dir, px, py, pz, t].
      */
     pick(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max_dist: number, sculpted: boolean): Float32Array;
+    plan_brush(cx: number, cy: number, radius: number, delta: number, layer: number): void;
+    /**
+     * [w, h, scale]; zeros when no plan exists.
+     */
+    plan_dims(): Uint32Array;
+    /**
+     * Replace the world's volume with the plan's geometry (like Slab, but
+     * shaped). Clears the document first; history is reset.
+     */
+    plan_generate(): boolean;
+    plan_init(w: number, h: number): void;
+    plan_mask_brush(cx: number, cy: number, radius: number, value: boolean): void;
+    /**
+     * One RGBA pixel per plan cell (contour bands, coast, void checker).
+     */
+    plan_rgba(layer: number): Uint8Array;
+    /**
+     * [top, bottom, mask] at a plan cell (for the status readout).
+     */
+    plan_sample(x: number, y: number): Float32Array;
+    plan_smooth(cx: number, cy: number, radius: number, strength: number, layer: number): void;
     /**
      * Drop the player onto the ground near (x, z); returns [x, y, z].
      */
@@ -208,6 +237,8 @@ export interface InitOutput {
     readonly world_gfx_overlay_lines: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly world_gfx_overlay_lines_colored: (a: number, b: number, c: number, d: number) => void;
     readonly world_gfx_overlay_quads: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
+    readonly world_gfx_plan_mode: (a: number, b: number) => void;
+    readonly world_gfx_plan_preview: (a: number, b: number) => void;
     readonly world_gfx_ready: (a: number) => number;
     readonly world_gfx_resize: (a: number, b: number, c: number) => void;
     readonly world_gfx_set_handles: (a: number, b: number, c: number) => void;
@@ -233,6 +264,14 @@ export interface InitOutput {
     readonly world_paint_stroke_begin: (a: number) => void;
     readonly world_paint_stroke_end: (a: number) => number;
     readonly world_pick: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+    readonly world_plan_brush: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly world_plan_dims: (a: number) => [number, number];
+    readonly world_plan_generate: (a: number) => number;
+    readonly world_plan_init: (a: number, b: number, c: number) => void;
+    readonly world_plan_mask_brush: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly world_plan_rgba: (a: number, b: number) => [number, number];
+    readonly world_plan_sample: (a: number, b: number, c: number) => [number, number];
+    readonly world_plan_smooth: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly world_player_spawn: (a: number, b: number, c: number) => [number, number];
     readonly world_player_update: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly world_rect_corners: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];

@@ -5,6 +5,7 @@
 use crate::mesh::{self, ChunkMesh, MeshOpts};
 use crate::ops::{self, BrushTool, DragState, EditOp, History, PaintStroke, RectSel, SelectionOp, Stroke};
 use crate::physics::{Phys, Player};
+use crate::plan::Plan;
 use crate::store::{pack_paint, unpack_paint, ChunkStore, Offsets, Paints};
 use crate::{unpack, IV};
 use wasm_bindgen::prelude::*;
@@ -17,7 +18,7 @@ use wasm_bindgen::prelude::*;
 ///   u32 n_bits,   n_bits  × (i32 cx, cy, cz; u16 n_runs; n_runs × (u16 len, u64 word))
 ///   u32 n_shifts, n_shifts × (i32 x, y, z; f32 sx, sy, sz)
 ///   u32 n_paints, n_paints × (i32 x, y, z; u8 dir; u32 packed)
-const BIN_MAGIC: &[u8; 4] = b"BXD6";
+const BIN_MAGIC: &[u8; 4] = b"BXD7";
 
 struct Reader<'a> {
     d: &'a [u8],
@@ -75,6 +76,7 @@ pub struct World {
     tileset_grid: (u32, u32),
     phys: Phys,
     player: Player,
+    plan: Option<Plan>,
     #[cfg(target_arch = "wasm32")]
     gfx: Option<crate::gfx::Gfx>,
 }
@@ -102,6 +104,7 @@ impl World {
             tileset_grid: (8, 8),
             phys: Phys::new(),
             player: Player::new(),
+            plan: None,
             #[cfg(target_arch = "wasm32")]
             gfx: None,
         }
@@ -616,6 +619,11 @@ impl World {
             out.push(*d);
             out.extend_from_slice(&p.to_le_bytes());
         }
+        // plan section (w = h = 0 when absent)
+        match &self.plan {
+            None => out.extend_from_slice(&[0u8; 8]),
+            Some(p) => p.to_bytes(&mut out),
+        }
         out
     }
 
@@ -664,13 +672,23 @@ impl World {
                 }
                 paints.push((c, d, p));
             }
-            Some((full, bits, shifts, paints))
+            let pw = r.u32()?;
+            let ph = r.u32()?;
+            let plan = if pw > 0 && ph > 0 {
+                let n = (pw as usize).checked_mul(ph as usize)?;
+                let bytes = r.take(n * 8 + n.div_ceil(8))?;
+                Some(Plan::from_bytes(pw, ph, bytes)?)
+            } else {
+                None
+            };
+            Some((full, bits, shifts, paints, plan))
         })() else {
             return false;
         };
 
         self.clear();
-        let (full, bits, shifts, paints) = parsed;
+        let (full, bits, shifts, paints, plan) = parsed;
+        self.plan = plan;
         for cp in full {
             self.store.insert_chunk_raw(cp, crate::store::Chunk::Full);
         }
@@ -809,6 +827,74 @@ impl World {
     ) -> Vec<f32> {
         self.phys_sync();
         self.phys.camera_boom([fx, fy, fz], [dx, dy, dz], dist).to_vec()
+    }
+
+    // -- world planning (height-map pair + mask; see plan.rs) -------------------------
+
+    pub fn plan_init(&mut self, w: u32, h: u32) {
+        let w = w.clamp(8, 4096) as usize;
+        let h = h.clamp(8, 4096) as usize;
+        self.plan = Some(Plan::new(w, h));
+    }
+
+    /// [w, h, scale]; zeros when no plan exists.
+    pub fn plan_dims(&self) -> Vec<u32> {
+        match &self.plan {
+            None => vec![0, 0, crate::plan::PLAN_SCALE as u32],
+            Some(p) => vec![p.w as u32, p.h as u32, crate::plan::PLAN_SCALE as u32],
+        }
+    }
+
+    pub fn plan_brush(&mut self, cx: f32, cy: f32, radius: f32, delta: f32, layer: u32) {
+        if let Some(p) = &mut self.plan {
+            p.brush(cx, cy, radius, delta, layer);
+        }
+    }
+
+    pub fn plan_smooth(&mut self, cx: f32, cy: f32, radius: f32, strength: f32, layer: u32) {
+        if let Some(p) = &mut self.plan {
+            p.smooth(cx, cy, radius, strength, layer);
+        }
+    }
+
+    pub fn plan_mask_brush(&mut self, cx: f32, cy: f32, radius: f32, value: bool) {
+        if let Some(p) = &mut self.plan {
+            p.mask_brush(cx, cy, radius, value);
+        }
+    }
+
+    /// One RGBA pixel per plan cell (contour bands, coast, void checker).
+    pub fn plan_rgba(&self, layer: u32) -> Vec<u8> {
+        match &self.plan {
+            None => vec![],
+            Some(p) => p.rgba(layer),
+        }
+    }
+
+    /// [top, bottom, mask] at a plan cell (for the status readout).
+    pub fn plan_sample(&self, x: u32, y: u32) -> Vec<f32> {
+        match &self.plan {
+            Some(p) if (x as usize) < p.w && (y as usize) < p.h => {
+                let i = y as usize * p.w + x as usize;
+                vec![p.top[i], p.bottom[i], if p.mask[i] { 1.0 } else { 0.0 }]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Replace the world's volume with the plan's geometry (like Slab, but
+    /// shaped). Clears the document first; history is reset.
+    pub fn plan_generate(&mut self) -> bool {
+        let Some(plan) = self.plan.take() else {
+            return false;
+        };
+        self.store.clear();
+        self.offsets.map.clear();
+        self.paints.map.clear();
+        plan.generate(&mut self.store);
+        self.plan = Some(plan);
+        self.history.clear();
+        true
     }
 
     /// Approximate document heap bytes (for the status/debug display).
@@ -965,6 +1051,22 @@ impl World {
         if let Some(g) = &mut self.gfx {
             g.set_handles(data);
         }
+    }
+
+    /// Planning mode: draw only the plan preview (plus axes).
+    pub fn gfx_plan_mode(&mut self, on: bool) {
+        if let Some(g) = &mut self.gfx {
+            g.plan_mode = on;
+        }
+    }
+
+    /// Rebuild the 3D disc-world preview from the plan (step = decimation).
+    pub fn gfx_plan_preview(&mut self, step: u32) {
+        let (Some(g), Some(p)) = (&mut self.gfx, &self.plan) else {
+            return;
+        };
+        let m = p.preview_mesh(step.max(1) as usize);
+        g.set_plan_mesh(&m);
     }
 
     /// [chunks, regions, paintedFaces, pendingRebuilds, drawCalls, lod0..lod4]

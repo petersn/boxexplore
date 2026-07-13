@@ -13,6 +13,7 @@
           <button data-mode="build" title="Build mode — rect-select faces, extrude/carve (1)">Build</button>
           <button data-mode="sculpt" title="Sculpt mode — corners and brushes (2)">Sculpt</button>
           <button data-mode="paint" title="Paint mode — assign tileset tiles to faces (3)">Paint</button>
+          <button data-mode="plan" title="Plan mode — design the world at macro scale with height maps (4)">Plan</button>
         </span>
         <span class="tb-group">
           <label>Grid
@@ -96,6 +97,31 @@
           </div>
         </div>
         <div id="viewport-wrap">
+          <div id="plan-pane" hidden>
+            <div id="plan-tools">
+              <span class="tb-group" id="plan-tool-buttons">
+                <button data-ptool="raise" class="active" title="Raise terrain">Raise</button>
+                <button data-ptool="lower" title="Lower terrain">Lower</button>
+                <button data-ptool="smooth" title="Smooth terrain">Smooth</button>
+                <button data-ptool="void" title="Cut cells out of the world">Void</button>
+                <button data-ptool="restore" title="Bring cells back into the world">Restore</button>
+              </span>
+              <span class="tb-group" id="plan-layer-buttons">
+                <button data-pl="0" class="active" title="Edit the top surface">Top</button>
+                <button data-pl="1" title="Edit the bottom surface (the disc's underside)">Bottom</button>
+              </span>
+              <label>R <input id="plan-radius" type="range" min="1" max="64" step="1" value="12" /></label>
+              <label>Step <input id="plan-strength" type="range" min="0.5" max="8" step="0.5" value="2" /></label>
+            </div>
+            <canvas id="plan-canvas"></canvas>
+            <div id="plan-footer">
+              <label>W <input id="plan-w" type="number" value="500" min="8" max="4096" /></label>
+              <label>H <input id="plan-h" type="number" value="500" min="8" max="4096" /></label>
+              <button id="plan-init" title="Start a fresh plan at this size">New plan</button>
+              <span class="tb-spacer"></span>
+              <button id="plan-generate" title="Replace the world's volume with geometry generated from this plan">Generate world</button>
+            </div>
+          </div>
           <canvas id="viewport"></canvas>
           <div id="selbox" hidden></div>
           <div id="statusbar"></div>
@@ -109,7 +135,7 @@
         <div class="help-cols">
           <table>
             <tr><th colspan="2">General</th></tr>
-            <tr><td>1 / 2 / 3</td><td>Build / Sculpt / Paint mode</td></tr>
+            <tr><td>1 / 2 / 3 / 4</td><td>Build / Sculpt / Paint / Plan mode</td></tr>
             <tr><td>Tab</td><td>Cycle mode</td></tr>
             <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>Undo / Redo</td></tr>
             <tr><td>Ctrl+S / Ctrl+O</td><td>Save / Open scene</td></tr>
@@ -160,6 +186,10 @@
             <tr><td>Alt+click</td><td>Eyedrop a face's tile into the palette</td></tr>
             <tr><td>X+drag / Right-click</td><td>Erase paint</td></tr>
             <tr><td colspan="2" class="hint">Paints show in the Textured view and follow extrusions/carves.</td></tr>
+            <tr><th colspan="2">Plan mode</th></tr>
+            <tr><td>LMB</td><td>Paint the selected brush (raise/lower/smooth/void/restore)</td></tr>
+            <tr><td>RMB / MMB drag</td><td>Pan the map · wheel zooms</td></tr>
+            <tr><td>Generate world</td><td>Replace the volume with the planned disc world</td></tr>
             <tr><th colspan="2">Play mode (G)</th></tr>
             <tr><td>W A S D</td><td>Run (camera-relative)</td></tr>
             <tr><td>Space</td><td>Jump</td></tr>

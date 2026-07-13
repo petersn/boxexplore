@@ -757,3 +757,41 @@ fn pick_hits_the_rendered_surface() {
     let far = ops::pick(&store, &offsets, [2.0, 200.0, 2.0], [0.0, -1.0, 0.0], 500.0, true);
     assert!(far.is_some(), "ray hops empty chunks down to the floor");
 }
+
+#[test]
+fn plan_edits_generate_and_roundtrip() {
+    use boxcore::wasm_api::World;
+    let mut w = World::new();
+    w.plan_init(64, 64);
+    assert_eq!(w.plan_dims(), vec![64, 64, 4]);
+    // raise a hill on top, dig the bottom UP toward it — the gap must hold
+    w.plan_brush(32.0, 32.0, 10.0, 12.0, 0);
+    w.plan_brush(32.0, 32.0, 10.0, 40.0, 1);
+    let s = w.plan_sample(32, 32);
+    assert!(s[0] > 10.0, "hill raised: {s:?}");
+    assert!(s[1] <= s[0] - 2.0 + 1e-4, "bottom clamped 2 under top: {s:?}");
+    // cut a corner out of the world
+    w.plan_mask_brush(0.0, 0.0, 12.0, false);
+    assert_eq!(w.plan_sample(2, 2)[2], 0.0, "corner is void");
+    // contours render (one RGBA pixel per cell)
+    assert_eq!(w.plan_rgba(0).len(), 64 * 64 * 4);
+
+    // generate: solid column under the hill, nothing in the void corner
+    assert!(w.plan_generate());
+    assert!(w.cell_count() > 0.0);
+    let peak = w.plan_sample(32, 32)[0].round() as i32;
+    assert!(w.get_cell(2, peak - 1, 2), "column reaches the hill top");
+    assert!(!w.get_cell(2, peak, 2), "and stops there");
+    assert!(
+        !w.get_cell(-126, 0, -126),
+        "void corner generated no cells"
+    );
+
+    // plan survives the binary roundtrip
+    let bin = w.to_bin();
+    let mut w2 = World::new();
+    assert!(w2.load_bin(&bin));
+    assert_eq!(w2.plan_dims(), vec![64, 64, 4]);
+    let s2 = w2.plan_sample(32, 32);
+    assert!((s2[0] - s[0]).abs() < 1e-5 && s2[2] == 1.0);
+}

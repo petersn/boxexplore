@@ -156,6 +156,10 @@ pub struct Gfx {
     handles_buf: Option<wgpu::Buffer>,
     handles_count: u32,
 
+    /// Planning mode: the frame draws only the plan preview + axes.
+    pub plan_mode: bool,
+    plan_mesh: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
+
     // stats for the debug/test facade
     pub last_draw_calls: u32,
 }
@@ -587,6 +591,8 @@ impl Gfx {
             overlays: Default::default(),
             handles_buf: None,
             handles_count: 0,
+            plan_mode: false,
+            plan_mesh: None,
             last_draw_calls: 0,
         })
     }
@@ -844,6 +850,13 @@ impl Gfx {
         };
     }
 
+    /// Upload the plan preview mesh (drawn instead of the world in plan mode).
+    pub fn set_plan_mesh(&mut self, m: &ChunkMesh) {
+        self.plan_mesh = self
+            .upload_mesh(m)
+            .map(|(v, i)| (v, i, m.indices.len() as u32));
+    }
+
     // -- chunk/region meshing ------------------------------------------------------
 
     fn upload_mesh(&self, m: &ChunkMesh) -> Option<(wgpu::Buffer, wgpu::Buffer)> {
@@ -1008,7 +1021,7 @@ impl Gfx {
         cam: &CameraParams,
     ) {
         // 1. absorb document dirt
-        if !store.dirty.is_empty() {
+        if !self.plan_mode && !store.dirty.is_empty() {
             self.members_stale = true;
             for cp in store.dirty.drain().collect::<Vec<_>>() {
                 let rp = (
@@ -1023,7 +1036,7 @@ impl Gfx {
                 }
             }
         }
-        if self.members_stale {
+        if !self.plan_mode && self.members_stale {
             self.rebuild_members(store);
         }
 
@@ -1040,7 +1053,11 @@ impl Gfx {
 
         // 2. region far/near transitions + desired levels
         let side = (REGION * S) as f32;
-        let region_keys: Vec<IV> = self.members.keys().copied().collect();
+        let region_keys: Vec<IV> = if self.plan_mode {
+            vec![]
+        } else {
+            self.members.keys().copied().collect()
+        };
         for rp in &region_keys {
             let min = [
                 (rp.0 as f32) * side,
@@ -1087,7 +1104,7 @@ impl Gfx {
         self.regions.retain(|rp, _| self.members.contains_key(rp));
 
         // 3. near-chunk LOD desires
-        for (rp, members) in &self.members {
+        for (rp, members) in self.members.iter().filter(|_| !self.plan_mode) {
             if self.far_regions.contains(rp) {
                 continue;
             }
@@ -1116,7 +1133,7 @@ impl Gfx {
         }
 
         // 4. budgeted rebuilds, nearest first
-        if !self.chunk_dirty.is_empty() {
+        if !self.plan_mode && !self.chunk_dirty.is_empty() {
             // Budget counts FACE-PRODUCING rebuilds — buried interior chunks
             // mesh to nothing almost instantly and shouldn't eat the budget
             // (a deep world queues tens of thousands of them). Small scenes
@@ -1171,7 +1188,7 @@ impl Gfx {
                 }
             }
         }
-        if !self.region_dirty.is_empty() {
+        if !self.plan_mode && !self.region_dirty.is_empty() {
             let list: Vec<IV> = self.region_dirty.iter().copied().take(REGION_BUDGET).collect();
             for rp in list {
                 self.region_dirty.remove(&rp);
@@ -1259,6 +1276,26 @@ impl Gfx {
             });
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.set_bind_group(1, &self.atlas_bg, &[]);
+
+            if self.plan_mode {
+                pass.set_pipeline(&self.pipe_flat);
+                if let Some((vbuf, ibuf, idx)) = &self.plan_mesh {
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..*idx, 0, 0..1);
+                    draws += 1;
+                }
+                // axes stay for orientation
+                pass.set_pipeline(&self.pipe_lines);
+                let axes = &self.overlays[5];
+                if axes.verts > 0 {
+                    if let Some(v) = &axes.vbuf {
+                        pass.set_vertex_buffer(0, v.slice(..));
+                        pass.draw(0..axes.verts, 0..1);
+                        draws += 1;
+                    }
+                }
+            } else {
 
             // opaque volume: unpainted ranges
             pass.set_pipeline(&self.pipe_flat);
@@ -1363,6 +1400,7 @@ impl Gfx {
                     pass.draw(0..6, 0..self.handles_count);
                     draws += 1;
                 }
+            }
             }
         }
         self.queue.submit([enc.finish()]);

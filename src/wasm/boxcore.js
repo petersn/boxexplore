@@ -309,6 +309,20 @@ export class World {
         wasm.world_gfx_overlay_quads(this.__wbg_ptr, which, ptr0, len0, ptr1, len1, r, gr, b, a);
     }
     /**
+     * Planning mode: draw only the plan preview (plus axes).
+     * @param {boolean} on
+     */
+    gfx_plan_mode(on) {
+        wasm.world_gfx_plan_mode(this.__wbg_ptr, on);
+    }
+    /**
+     * Rebuild the 3D disc-world preview from the plan (step = decimation).
+     * @param {number} step
+     */
+    gfx_plan_preview(step) {
+        wasm.world_gfx_plan_preview(this.__wbg_ptr, step);
+    }
+    /**
      * @returns {boolean}
      */
     gfx_ready() {
@@ -539,6 +553,84 @@ export class World {
         var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
+    }
+    /**
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} radius
+     * @param {number} delta
+     * @param {number} layer
+     */
+    plan_brush(cx, cy, radius, delta, layer) {
+        wasm.world_plan_brush(this.__wbg_ptr, cx, cy, radius, delta, layer);
+    }
+    /**
+     * [w, h, scale]; zeros when no plan exists.
+     * @returns {Uint32Array}
+     */
+    plan_dims() {
+        const ret = wasm.world_plan_dims(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Replace the world's volume with the plan's geometry (like Slab, but
+     * shaped). Clears the document first; history is reset.
+     * @returns {boolean}
+     */
+    plan_generate() {
+        const ret = wasm.world_plan_generate(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * @param {number} w
+     * @param {number} h
+     */
+    plan_init(w, h) {
+        wasm.world_plan_init(this.__wbg_ptr, w, h);
+    }
+    /**
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} radius
+     * @param {boolean} value
+     */
+    plan_mask_brush(cx, cy, radius, value) {
+        wasm.world_plan_mask_brush(this.__wbg_ptr, cx, cy, radius, value);
+    }
+    /**
+     * One RGBA pixel per plan cell (contour bands, coast, void checker).
+     * @param {number} layer
+     * @returns {Uint8Array}
+     */
+    plan_rgba(layer) {
+        const ret = wasm.world_plan_rgba(this.__wbg_ptr, layer);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * [top, bottom, mask] at a plan cell (for the status readout).
+     * @param {number} x
+     * @param {number} y
+     * @returns {Float32Array}
+     */
+    plan_sample(x, y) {
+        const ret = wasm.world_plan_sample(this.__wbg_ptr, x, y);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} radius
+     * @param {number} strength
+     * @param {number} layer
+     */
+    plan_smooth(cx, cy, radius, strength, layer) {
+        wasm.world_plan_smooth(this.__wbg_ptr, cx, cy, radius, strength, layer);
     }
     /**
      * Drop the player onto the ground near (x, z); returns [x, y, z].

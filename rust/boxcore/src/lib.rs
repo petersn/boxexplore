@@ -13,6 +13,7 @@ pub mod gfx;
 pub mod mesh;
 pub mod ops;
 pub mod physics;
+pub mod plan;
 pub mod store;
 pub mod wasm_api;
 
